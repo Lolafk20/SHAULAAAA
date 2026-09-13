@@ -1,15 +1,17 @@
 # ============================================================
-# S.H.A.U.L.A. v3.4 - Accetta chiavi AIzaSy... e AQ.Ab8...
+# S.H.A.U.L.A. v3.5 - Fix import + chiavi AIzaSy/AQ.Ab8
 # ============================================================
 import os, sys, json, time, shutil, datetime, subprocess
 import threading, webbrowser, ctypes
+import importlib
 
 import tkinter as tk
 from tkinter import scrolledtext, simpledialog
 
 def try_import(name):
+    """Importa un modulo in modo sicuro, gestendo sottomoduli (es. google.generativeai)."""
     try:
-        return __import__(name)
+        return importlib.import_module(name)
     except ImportError:
         return None
 
@@ -462,7 +464,7 @@ class WakeWord(threading.Thread):
 class GUI:
     def __init__(self, root):
         self.root = root
-        root.title("🦂 S.H.A.U.L.A. v3.4")
+        root.title("🦂 S.H.A.U.L.A. v3.5")
         root.geometry("820x660")
         root.configure(bg="#1a1a2e")
 
