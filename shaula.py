@@ -1,7 +1,5 @@
 # ============================================================
-# S.H.A.U.L.A. v3.2 - Advanced
-# La API key va SOLO in config.json (mai in questo file)
-# Modello aggiornato a gemini-2.0-flash con fallback automatico
+# S.H.A.U.L.A. v3.3 - Con pulsante API Key integrato
 # ============================================================
 import os, sys, json, time, shutil, datetime, subprocess
 import threading, webbrowser, ctypes
@@ -34,7 +32,7 @@ except ImportError:
     pass
 
 # ============================================================
-# PERCORSI
+# PERCORSI - usa sempre la cartella dell'exe
 # ============================================================
 if getattr(sys, 'frozen', False):
     BASE_DIR = os.path.dirname(sys.executable)
@@ -44,21 +42,27 @@ else:
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
 MEMORIA_FILE = os.path.join(BASE_DIR, "memoria.json")
 
+print(f"📁 Cartella SHAULA: {BASE_DIR}")
+print(f"📄 File config: {CONFIG_FILE}")
+
 def carica_json(p, default):
     if os.path.exists(p):
         try:
             with open(p, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Errore lettura config: {e}")
     return default
 
 def salva_json(p, d):
     try:
         with open(p, "w", encoding="utf-8") as f:
             json.dump(d, f, indent=2, ensure_ascii=False)
-    except Exception:
-        pass
+        print(f"✅ Salvato in: {p}")
+        return True
+    except Exception as e:
+        print(f"❌ Errore salvataggio: {e}")
+        return False
 
 CONFIG = carica_json(CONFIG_FILE, {
     "gemini_api_key": "",
@@ -101,13 +105,12 @@ def parla(testo, cb=None):
             pass
 
 # ============================================================
-# GEMINI - con fallback automatico su più modelli
+# GEMINI
 # ============================================================
 modello = None
 chat = None
 MODELLO_ATTIVO = None
 
-# Lista di modelli da provare in ordine (dal più nuovo al più vecchio)
 MODELLI_CANDIDATI = [
     "gemini-2.5-flash",
     "gemini-2.0-flash",
@@ -118,18 +121,15 @@ MODELLI_CANDIDATI = [
 def inizializza_gemini():
     global modello, chat, MODELLO_ATTIVO
     if not genai:
-        print("⚠️ Libreria google-generativeai non disponibile")
-        return
+        return "⚠️ Libreria google-generativeai mancante"
     key = CONFIG.get("gemini_api_key", "").strip()
     if not key:
-        print("⚠️ Nessuna API key in config.json")
-        return
+        return "⚠️ Nessuna API key configurata"
 
     try:
         genai.configure(api_key=key)
     except Exception as e:
-        print(f"❌ Errore configure Gemini: {e}")
-        return
+        return f"❌ Errore configure: {e}"
 
     sys_prompt = (
         "Sei Shaula di Re:Zero. Chiami l'utente 'Padrone'. "
@@ -145,21 +145,16 @@ def inizializza_gemini():
                 system_instruction=sys_prompt
             )
             chat_test = modello_test.start_chat(history=[])
-            # test veloce per verificare che il modello risponda
             chat_test.send_message("ping")
-            # se arriva qui, il modello funziona
             modello = modello_test
             chat = chat_test
             MODELLO_ATTIVO = nome_modello
-            print(f"✅ Gemini attivo con modello: {nome_modello}")
-            return
+            return f"✅ Modello attivo: {nome_modello}"
         except Exception as e:
-            print(f"⚠️ Modello {nome_modello} non disponibile: {str(e)[:120]}")
+            print(f"⚠️ {nome_modello}: {str(e)[:100]}")
             continue
 
-    print("❌ Nessun modello Gemini disponibile. Verifica la API key.")
-    modello = None
-    chat = None
+    return "❌ Nessun modello Gemini disponibile"
 
 def chiedi_gemini(testo):
     if not chat:
@@ -172,34 +167,6 @@ def chiedi_gemini(testo):
         return r.text
     except Exception as e:
         return f"Errore: {e}"
-
-def chiedi_api_key_se_mancante():
-    """Se la API key non è configurata, la chiede e la salva in config.json."""
-    if CONFIG.get("gemini_api_key", "").strip():
-        inizializza_gemini()
-        return
-
-    root_tmp = tk.Tk()
-    root_tmp.withdraw()
-    root_tmp.attributes("-topmost", True)
-
-    msg = (
-        "Benvenuto, Padrone~! 🦂\n\n"
-        "Per far funzionare il cervello AI di S.H.A.U.L.A. serve una API key Gemini (gratis).\n\n"
-        "Prendila qui:\n"
-        "https://aistudio.google.com/app/apikey\n\n"
-        "Incolla la chiave qui sotto (formato AIzaSy...):"
-    )
-    chiave = simpledialog.askstring("🦂 S.H.A.U.L.A. - Configurazione", msg, parent=root_tmp)
-    root_tmp.destroy()
-
-    if chiave and chiave.strip().startswith("AIza"):
-        CONFIG["gemini_api_key"] = chiave.strip()
-        salva_json(CONFIG_FILE, CONFIG)
-        print("✅ API key salvata in config.json")
-        inizializza_gemini()
-    else:
-        print("⚠️ Nessuna chiave valida inserita. SHAULA funzionerà senza Gemini.")
 
 # ============================================================
 # MICROFONO
@@ -263,12 +230,10 @@ def desktop():
 def esegui(comando, output):
     c = comando.lower().strip()
 
-    # Esci
     if c in ["esci", "arrivederci", "chiudi shaula"]:
         parla("Shaula ti saluta, Padrone~! Ehehe!", output)
         return "ESCI"
 
-    # Memoria
     if c.startswith("ricorda che"):
         MEMORIA["ricordi"].append(comando[11:].strip())
         salva_json(MEMORIA_FILE, MEMORIA)
@@ -280,13 +245,7 @@ def esegui(comando, output):
         else:
             parla("Non ricordo ancora nulla, Padrone~", output)
         return True
-    if "dimentica tutto" in c:
-        MEMORIA["ricordi"] = []
-        salva_json(MEMORIA_FILE, MEMORIA)
-        parla("Memoria azzerata, Padrone~", output)
-        return True
 
-    # Ricerca web con voce
     if c.startswith("cerca ") and not c.startswith("cerca su "):
         q = comando[6:].strip()
         if q:
@@ -319,19 +278,16 @@ def esegui(comando, output):
         parla(f"Apro {url}, Padrone~", output)
         return True
 
-    # Meteo
     if "meteo" in c:
         città = c.replace("meteo", "").replace("a", "", 1).strip() or "Roma"
         webbrowser.open(f"https://www.google.com/search?q=meteo+{città}")
         parla(f"Ecco il meteo di {città}, Padrone~!", output)
         return True
 
-    # Notizie
     if "notizie" in c:
         threading.Thread(target=rispondi_con_ricerca, args=("notizie di oggi", output), daemon=True).start()
         return True
 
-    # Cartelle
     if "crea cartella" in c:
         n = comando.lower().replace("crea cartella", "").strip()
         if n:
@@ -356,7 +312,6 @@ def esegui(comando, output):
         parla(f"Sul desktop ci sono {len(f)} elementi: " + ", ".join(f[:10]), output)
         return True
 
-    # File
     if "cerca file" in c:
         n = comando.lower().replace("cerca file", "").strip()
         if not n:
@@ -385,7 +340,6 @@ def esegui(comando, output):
             parla("Non trovata, Padrone~", output)
         return True
 
-    # Programmi
     if c.startswith("apri "):
         prog = comando[5:].strip()
         try:
@@ -395,7 +349,6 @@ def esegui(comando, output):
             parla(f"Errore: {e}", output)
         return True
 
-    # Sistema
     if "info sistema" in c:
         if not psutil:
             parla("psutil non installato, Padrone~", output)
@@ -414,7 +367,6 @@ def esegui(comando, output):
         parla(f"Oggi è {datetime.datetime.now().strftime('%A %d %B %Y')}, Padrone~!", output)
         return True
 
-    # Volume
     if "alza volume" in c or "volume su" in c:
         for _ in range(5):
             if keyboard: keyboard.press_and_release('volume up')
@@ -430,7 +382,6 @@ def esegui(comando, output):
         parla("Silenziato, Padrone~", output)
         return True
 
-    # Sistema avanzato
     if "blocca pc" in c:
         parla("Blocco il PC, Padrone~!", output)
         ctypes.windll.user32.LockWorkStation()
@@ -448,7 +399,6 @@ def esegui(comando, output):
         parla("Annullato, Padrone~!", output)
         return True
 
-    # Schermo
     if "screenshot" in c:
         if not PIL_ImageGrab:
             parla("Pillow non installato, Padrone~", output)
@@ -458,7 +408,6 @@ def esegui(comando, output):
         parla(f"Screenshot salvato: {n}", output)
         return True
 
-    # Appunti file
     if c.startswith("scrivi appunto"):
         t = comando.replace("scrivi appunto", "").strip()
         with open(os.path.join(BASE_DIR, "appunti.txt"), "a", encoding="utf-8") as f:
@@ -474,15 +423,6 @@ def esegui(comando, output):
             parla("Nessun appunto, Padrone~", output)
         return True
 
-    # Clipboard
-    if c.startswith("copia negli appunti"):
-        t = comando.replace("copia negli appunti", "").strip()
-        r = tk.Tk(); r.withdraw()
-        r.clipboard_clear(); r.clipboard_append(t); r.update(); r.destroy()
-        parla("Copiato, Padrone~", output)
-        return True
-
-    # Personalità
     if "chi sei" in c:
         parla("Shaula è la tua assistente devota, Padrone~! 🦂", output)
         return True
@@ -515,8 +455,8 @@ class WakeWord(threading.Thread):
 class GUI:
     def __init__(self, root):
         self.root = root
-        root.title("🦂 S.H.A.U.L.A. v3.2")
-        root.geometry("800x640")
+        root.title("🦂 S.H.A.U.L.A. v3.3")
+        root.geometry("820x660")
         root.configure(bg="#1a1a2e")
 
         tk.Label(root, text="🦂  S.H.A.U.L.A.  🦂",
@@ -532,6 +472,7 @@ class GUI:
             state=tk.DISABLED)
         self.chat.pack(fill=tk.BOTH, expand=True, padx=15, pady=10)
 
+        # Frame bottoni
         f = tk.Frame(root, bg="#1a1a2e")
         f.pack(fill=tk.X, padx=15, pady=(0, 8))
 
@@ -548,26 +489,35 @@ class GUI:
                   bg="#4a90e2", fg="white", font=("Segoe UI", 10, "bold"),
                   relief=tk.FLAT, padx=15).pack(side=tk.LEFT, padx=5)
 
+        # Pulsante API KEY - NOVITÀ
+        tk.Button(f, text="🔑 API Key", command=self.imposta_api_key,
+                  bg="#ffcc66", fg="#1a1a2e", font=("Segoe UI", 10, "bold"),
+                  relief=tk.FLAT, padx=15).pack(side=tk.LEFT, padx=5)
+
+        f2 = tk.Frame(root, bg="#1a1a2e")
+        f2.pack(fill=tk.X, padx=15, pady=(0, 8))
+
         self.wake_var = tk.BooleanVar(value=CONFIG["wake_word_attivo"])
-        tk.Checkbutton(f, text="👂 Wake word", variable=self.wake_var,
+        tk.Checkbutton(f2, text="👂 Wake word", variable=self.wake_var,
                        command=self.toggle_wake, bg="#1a1a2e", fg="#a0a0c0",
                        selectcolor="#252540", activebackground="#1a1a2e",
-                       activeforeground="#ff6b9d").pack(side=tk.LEFT, padx=5)
+                       activeforeground="#ff6b9d").pack(side=tk.LEFT)
 
-        self.status = tk.Label(root, text="Pronta, Padrone~!",
-                               bg="#1a1a2e", fg="#7fdb8f")
-        self.status.pack(pady=(0, 8))
+        self.status = tk.Label(f2, text="Pronta, Padrone~!",
+                               bg="#1a1a2e", fg="#7fdb8f",
+                               font=("Segoe UI", 9))
+        self.status.pack(side=tk.RIGHT)
 
+        # Benvenuto
         self.scrivi("🦂 SHAULA: Shaula è pronta, Padrone~!\n")
+        self.scrivi(f"📁 Cartella: {BASE_DIR}\n")
         if not CONFIG["gemini_api_key"]:
-            self.scrivi("⚠️ Aggiungi la API key Gemini in config.json!\n")
-        elif MODELLO_ATTIVO:
-            self.scrivi(f"✅ Modello AI attivo: {MODELLO_ATTIVO}\n")
+            self.scrivi("⚠️  Clicca il pulsante 🔑 API Key per inserire la chiave Gemini!\n")
         else:
-            self.scrivi("⚠️ Gemini non inizializzato. Controlla config.json.\n")
-        self.scrivi("💡 Esempi: 'cerca capitale del Giappone', 'crea cartella Test', "
-                    "'che ore sono', 'spegni il pc', 'scrivi appunto ...', "
-                    "'cerca su google pizza', 'apri notepad'\n\n")
+            risultato = inizializza_gemini()
+            self.scrivi(f"{risultato}\n")
+        self.scrivi("💡 Esempi: 'chi sei', 'cerca capitale del Giappone', "
+                    "'crea cartella Test', 'che ore sono', 'spegni il pc'\n\n")
 
         threading.Thread(target=lambda: parla("Shaula è pronta, Padrone~!"), daemon=True).start()
         self.wake = None
@@ -582,6 +532,37 @@ class GUI:
 
     def output(self, t):
         self.root.after(0, lambda: self.scrivi(t))
+
+    def imposta_api_key(self):
+        """Apre finestra per inserire/modificare la API key e salva in config.json"""
+        msg = (
+            "Incolla qui la tua API key Gemini (inizia con AIzaSy...)\n\n"
+            "Se non ce l'hai, prendila gratis su:\n"
+            "https://aistudio.google.com/app/apikey"
+        )
+        chiave = simpledialog.askstring("🔑 API Key Gemini", msg,
+                                        parent=self.root,
+                                        initialvalue=CONFIG.get("gemini_api_key", ""))
+        if not chiave:
+            self.scrivi("⚠️ Nessuna chiave inserita.\n")
+            return
+
+        chiave = chiave.strip()
+        if not chiave.startswith("AIza"):
+            self.scrivi("❌ La chiave non sembra valida (deve iniziare con AIzaSy...).\n")
+            return
+
+        CONFIG["gemini_api_key"] = chiave
+        ok = salva_json(CONFIG_FILE, CONFIG)
+
+        if ok:
+            self.scrivi(f"💾 Chiave salvata in: {CONFIG_FILE}\n")
+            self.scrivi("🔄 Attivo Gemini...\n")
+            risultato = inizializza_gemini()
+            self.scrivi(f"{risultato}\n")
+        else:
+            self.scrivi("❌ Errore nel salvataggio del file config.json\n")
+            self.scrivi(f"📁 Percorso: {CONFIG_FILE}\n")
 
     def invia(self):
         c = self.entry.get().strip()
@@ -639,11 +620,11 @@ class GUI:
             if risposta:
                 parla(risposta, self.output)
         else:
-            parla(f"Non ho capito '{cmd}', Padrone~. Controlla la API key in config.json!", self.output)
+            parla(f"Shaula non ha il cervello AI attivo, Padrone~! "
+                  f"Clicca 🔑 API Key per configurarlo.", self.output)
         self.status.config(text="Pronta, Padrone~!", fg="#7fdb8f")
 
 def main():
-    chiedi_api_key_se_mancante()
     root = tk.Tk()
     GUI(root)
     root.mainloop()
