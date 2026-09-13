@@ -8,5 +8,4 @@ keyboard
 duckduckgo-search
 pycaw
 comtypes
-pytesseract
 pyinstaller
