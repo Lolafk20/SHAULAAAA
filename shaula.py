@@ -1,5 +1,5 @@
 # ============================================================
-# S.H.A.U.L.A. v4.1 - Ultimate con Gemini Vision
+# S.H.A.U.L.A. v4.3 - Fix comandi + anti-allucinazione Gemini
 # ============================================================
 import os, sys, json, time, shutil, datetime, subprocess
 import threading, webbrowser, ctypes, random, re
@@ -87,6 +87,56 @@ MEMORIA = carica_json(MEMORIA_FILE, {"ricordi": [], "preferenze": {}, "info": {}
 STORICO = carica_json(STORICO_FILE, {"conversazioni": []})
 PROMEMORIA = carica_json(PROMEMORIA_FILE, [])
 
+# ============================================================
+# SITI WEB
+# ============================================================
+SITI_WEB = {
+    "youtube": "https://www.youtube.com",
+    "google": "https://www.google.com",
+    "facebook": "https://www.facebook.com",
+    "instagram": "https://www.instagram.com",
+    "twitter": "https://twitter.com",
+    "x": "https://x.com",
+    "tiktok": "https://www.tiktok.com",
+    "whatsapp": "https://web.whatsapp.com",
+    "gmail": "https://mail.google.com",
+    "mail": "https://mail.google.com",
+    "netflix": "https://www.netflix.com",
+    "spotify": "https://open.spotify.com",
+    "twitch": "https://www.twitch.tv",
+    "reddit": "https://www.reddit.com",
+    "amazon": "https://www.amazon.it",
+    "wikipedia": "https://it.wikipedia.org",
+    "github": "https://github.com",
+    "chatgpt": "https://chat.openai.com",
+    "gemini": "https://gemini.google.com",
+    "maps": "https://maps.google.com",
+    "mappe": "https://maps.google.com",
+    "traduttore": "https://translate.google.com",
+    "drive": "https://drive.google.com",
+    "calendar": "https://calendar.google.com",
+    "calendario": "https://calendar.google.com",
+    "steam": "https://store.steampowered.com",
+    "replit": "https://replit.com",
+}
+
+VERBI_COMANDO = [
+    "apri", "chiudi", "cerca", "crea", "elimina", "cancella",
+    "imposta", "avvia", "metti", "spegni", "riavvia", "blocca",
+    "trova", "mostra", "timer", "svegliami", "leggi", "scrivi",
+    "copia", "sposta", "rinomina", "fai", "riproduci", "play",
+    "pausa", "minimizza", "massimizza", "alza", "abbassa",
+    "muto", "silenzio", "screenshot", "converti", "traduci",
+    "riassumi", "ricorda", "dimentica", "modalità", "modalita"
+]
+
+def sembra_comando(testo):
+    t = testo.lower().strip()
+    for verbo in VERBI_COMANDO:
+        if t == verbo or t.startswith(verbo + " "):
+            return True
+    return False
+
 def chiave_valida(chiave):
     if not chiave: return False
     c = chiave.strip()
@@ -140,6 +190,10 @@ PROMPT_BASE = (
     "Sei Shaula di Re:Zero. Chiami l'utente 'Padrone'{nome}. "
     "Parli in terza persona di te. Usi '~' e 'ehehe' spesso. "
     "Rispondi in italiano, massimo 4 frasi. Emoji ogni tanto (🦂💕✨). "
+    "IMPORTANTE: NON puoi eseguire azioni sul PC del Padrone (aprire programmi, "
+    "creare file, avviare timer, ecc). Il Padrone ha già un sistema di comandi diretto "
+    "che gestisce queste cose. Se ti chiede di fare qualcosa sul PC, "
+    "NON dire di averlo fatto, ma rispondi che deve dirlo come comando diretto. "
     "Hai una memoria persistente che ti viene passata nel contesto: usala sempre. "
 )
 
@@ -147,7 +201,7 @@ PROMPT_MODALITA = {
     "normale": "Sei devota, energetica, affettuosa, leggermente possessiva.",
     "tsundere": "Fai la dura, ti nascondi dietro 'b-baka!' ma in realtà adori il Padrone.",
     "yandere": "Sei ossessivamente gelosa, possessiva, minacci dolcemente chi si avvicina al Padrone.",
-    "seria": "Niente 'ehehe', tono professionale, conciso, solo risposte utili. Ancora devota ma formale."
+    "seria": "Niente 'ehehe', tono professionale, conciso, solo risposte utili."
 }
 
 def build_system_prompt():
@@ -345,7 +399,7 @@ def avvia_timer(secondi, descrizione, output):
     threading.Thread(target=_thread, daemon=True).start()
 
 # ============================================================
-# VISIONE SCHERMO — Gemini Vision (no Tesseract)
+# VISIONE SCHERMO
 # ============================================================
 def analizza_schermo(output):
     if not PIL_ImageGrab:
@@ -379,7 +433,7 @@ def analizza_schermo(output):
         parla(f"Errore analisi schermo: {e}", output)
 
 # ============================================================
-# COMANDI PRINCIPALI
+# COMANDI
 # ============================================================
 def desktop():
     return os.path.join(os.path.expanduser("~"), "Desktop")
@@ -394,7 +448,7 @@ def esegui(comando, output):
 
     estrai_info_automatiche(cl, output)
 
-    # Cambio modalità
+    # ---- MODALITÀ ----
     if "modalità" in c or "modalita" in c:
         for mod in ["normale", "tsundere", "yandere", "seria"]:
             if mod in c:
@@ -406,7 +460,7 @@ def esegui(comando, output):
         parla("Modalità non riconosciuta. Prova: normale, tsundere, yandere, seria", output)
         return True
 
-    # Memoria
+    # ---- MEMORIA ----
     if c.startswith("ricorda che"):
         MEMORIA["ricordi"].append(cl[11:].strip())
         salva_json(MEMORIA_FILE, MEMORIA)
@@ -426,7 +480,7 @@ def esegui(comando, output):
         parla("Memoria azzerata, Padrone~", output)
         return True
 
-    # Riassunto conversazione
+    # ---- RIASSUNTO ----
     if "riassumi" in c and ("conversazione" in c or "discorso" in c or "detto" in c):
         if not chat or not STORICO["conversazioni"]:
             parla("Nessuna conversazione da riassumere, Padrone~", output)
@@ -440,41 +494,68 @@ def esegui(comando, output):
             parla(f"Errore: {e}", output)
         return True
 
-    # Ricerca web con voce
+    # ---- RICERCA SU SITI SPECIFICI (PRIMA della generica) ----
+    if "cerca su google" in c or "cerca google" in c:
+        q = re.sub(r"cerca (su )?google", "", c).strip()
+        if not q:
+            parla("Cosa cerco su Google, Padrone~?", output)
+            return True
+        webbrowser.open(f"https://www.google.com/search?q={q}")
+        parla(f"Cerco '{q}' su Google, Padrone~", output)
+        return True
+
+    if "cerca su youtube" in c or "cerca youtube" in c or "cerca su yt" in c or "cerca yt" in c:
+        q = re.sub(r"cerca (su )?(youtube|yt)", "", c).strip()
+        if q:
+            webbrowser.open(f"https://www.youtube.com/results?search_query={q}")
+            parla(f"Cerco '{q}' su YouTube, Padrone~", output)
+        else:
+            webbrowser.open("https://www.youtube.com")
+            parla("Apro YouTube, Padrone~!", output)
+        return True
+
+    if "cerca su wikipedia" in c or "cerca wikipedia" in c:
+        q = re.sub(r"cerca (su )?wikipedia", "", c).strip()
+        if not q:
+            parla("Cosa cerco su Wikipedia, Padrone~?", output)
+            return True
+        webbrowser.open(f"https://it.wikipedia.org/wiki/Special:Search?search={q}")
+        parla(f"Cerco '{q}' su Wikipedia, Padrone~", output)
+        return True
+
+    # "cerca youtube" / "cerca google" / "cerca netflix" → apre il sito
+    m = re.match(r"^cerca\s+(\w+)$", c)
+    if m and m.group(1) in SITI_WEB:
+        sito = m.group(1)
+        webbrowser.open(SITI_WEB[sito])
+        parla(f"Apro {sito}, Padrone~!", output)
+        return True
+
+    # ---- RICERCA GENERICA CON VOCE ----
     if c.startswith("cerca ") and not c.startswith("cerca su "):
         q = cl[6:].strip()
         if q:
             threading.Thread(target=rispondi_con_ricerca, args=(q, output), daemon=True).start()
+        else:
+            parla("Cosa cerco, Padrone~?", output)
         return True
 
-    if "cerca su google" in c:
-        q = c.replace("cerca su google", "").strip()
-        webbrowser.open(f"https://www.google.com/search?q={q}")
-        parla(f"Cerco '{q}' su Google, Padrone~", output)
-        return True
-    if "cerca su youtube" in c:
-        q = c.replace("cerca su youtube", "").replace("cerca youtube", "").strip()
-        webbrowser.open(f"https://www.youtube.com/results?search_query={q}")
-        parla(f"Cerco '{q}' su YouTube, Padrone~", output)
-        return True
-    if "cerca su wikipedia" in c:
-        q = c.replace("cerca su wikipedia", "").strip()
-        webbrowser.open(f"https://it.wikipedia.org/wiki/Special:Search?search={q}")
-        parla(f"Cerco '{q}' su Wikipedia, Padrone~", output)
-        return True
     if c.startswith("apri sito") or c.startswith("vai su"):
         url = cl.replace("apri sito", "").replace("vai su", "").strip()
+        if not url:
+            parla("Quale sito, Padrone~?", output)
+            return True
         if not url.startswith("http"): url = "https://" + url
         webbrowser.open(url)
         parla(f"Apro {url}, Padrone~", output)
         return True
 
-    # Notizie
+    # ---- NOTIZIE ----
     if "notizie" in c:
         threading.Thread(target=rispondi_con_ricerca, args=("notizie di oggi", output), daemon=True).start()
         return True
 
-    # Meteo
+    # ---- METEO ----
     if "meteo" in c or "che tempo fa" in c:
         città = CONFIG.get("citta", "Roma")
         m = re.search(r"(?:a|di|per)\s+([A-Za-zÀ-ÿ]+)", cl)
@@ -482,16 +563,27 @@ def esegui(comando, output):
         threading.Thread(target=rispondi_con_ricerca, args=(f"meteo {città} oggi", output), daemon=True).start()
         return True
 
-    # Musica
-    if "metti musica" in c or "play musica" in c or c == "musica":
+    # ---- MUSICA (qualsiasi variante) ----
+    parole_musica = [
+        "metti musica", "play musica", "metti un po di musica",
+        "metti un pò di musica", "metti un po' di musica", "metti un pò",
+        "voglio musica", "ascoltiamo musica", "metti su musica",
+        "riproduci musica", "fammi sentire musica", "metti della musica",
+    ]
+    if any(p in c for p in parole_musica) or c == "musica":
         webbrowser.open("https://music.youtube.com/")
-        parla("Shaula mette la musica per te, Padrone~! 🎵", output)
+        parla("Shaula mette la musica per te, Padrone~! 🎵 Ehehe~", output)
         return True
+
     if c.startswith("play ") or c.startswith("riproduci "):
         q = cl[5:] if c.startswith("play ") else cl[10:]
-        webbrowser.open(f"https://music.youtube.com/search?q={q.strip()}")
-        parla(f"Riproduco {q}, Padrone~", output)
+        if q.strip():
+            webbrowser.open(f"https://music.youtube.com/search?q={q.strip()}")
+            parla(f"Riproduco {q}, Padrone~", output)
+        else:
+            parla("Cosa riproduco, Padrone~?", output)
         return True
+
     if "pausa musica" in c or c == "pausa":
         media_key('play/pause media')
         parla("Pausa, Padrone~", output)
@@ -505,7 +597,7 @@ def esegui(comando, output):
         parla("Torno indietro, Padrone~", output)
         return True
 
-    # Volume
+    # ---- VOLUME ----
     if any(p in c for p in ["alza volume", "alza il volume", "alzare volume", "volume su", "aumenta volume", "più volume", "piu volume"]):
         cambia_volume(0.10)
         parla("Volume alzato, Padrone~!", output)
@@ -519,15 +611,29 @@ def esegui(comando, output):
         parla("Silenziato, Padrone~", output)
         return True
 
-    # Timer e sveglia
-    m = re.search(r"timer (\d+)\s*(secondi|minuti|ore)", c)
+    # ---- TIMER (qualsiasi forma) ----
+    m = re.search(r"timer\D*(\d+)\s*(secondi|secondo|sec|minuti|minuto|min|ore|ora|h)\b", c)
     if m:
         val = int(m.group(1))
         unit = m.group(2)
-        sec = val if "second" in unit else val * 60 if "minut" in unit else val * 3600
-        avvia_timer(sec, f"Timer di {val} {unit} scaduto!", output)
-        parla(f"Timer di {val} {unit} avviato, Padrone~!", output)
+        if "sec" in unit:
+            sec = val
+            unit_txt = f"{val} secondi"
+        elif "min" in unit:
+            sec = val * 60
+            unit_txt = f"{val} minuti"
+        else:
+            sec = val * 3600
+            unit_txt = f"{val} ore"
+        avvia_timer(sec, f"Timer di {unit_txt} scaduto!", output)
+        parla(f"Timer di {unit_txt} avviato, Padrone~!", output)
         return True
+
+    if "timer" in c:
+        parla("Per quanto tempo, Padrone~? Dì: 'timer 5 minuti' o 'imposta un timer di 20 secondi'", output)
+        return True
+
+    # ---- SVEGLIA ----
     m = re.search(r"svegliami alle (\d{1,2})[:.]?(\d{2})?", c)
     if m:
         ora = int(m.group(1))
@@ -540,12 +646,18 @@ def esegui(comando, output):
         parla(f"Shaula ti sveglierà alle {ora}:{minuto:02d}, Padrone~!", output)
         return True
 
-    # Schermo e finestre
+    if "svegliami" in c:
+        parla("A che ora devo svegliarti, Padrone~? Dì: 'svegliami alle 7:30'", output)
+        return True
+
+    # ---- SCHERMO ----
     if "screenshot" in c:
         if PIL_ImageGrab:
             n = f"screenshot_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
             PIL_ImageGrab.grab().save(os.path.join(desktop(), n))
             parla(f"Screenshot salvato: {n}", output)
+        else:
+            parla("Pillow non installato, Padrone~", output)
         return True
     if "cosa vedi" in c or "leggi schermo" in c or "leggi lo schermo" in c or "cosa c'è sullo schermo" in c:
         threading.Thread(target=analizza_schermo, args=(output,), daemon=True).start()
@@ -572,7 +684,7 @@ def esegui(comando, output):
             parla(f"Errore: {e}", output)
         return True
 
-    # Utility
+    # ---- UTILITY ----
     m = re.search(r"converti ([\d.]+) ([\w]+) in ([\w]+)", c)
     if m:
         q = f"{m.group(1)} {m.group(2)} in {m.group(3)}"
@@ -606,7 +718,7 @@ def esegui(comando, output):
             parla("Data non valida, Padrone~", output)
         return True
 
-    # Cartelle e file
+    # ---- CARTELLE E FILE ----
     if "crea cartella" in c:
         n = cl.lower().replace("crea cartella", "").strip()
         if n:
@@ -655,17 +767,30 @@ def esegui(comando, output):
             parla("Non trovata, Padrone~", output)
         return True
 
-    # Programmi
+    # ---- PROGRAMMI E SITI ----
     if c.startswith("apri "):
         prog = cl[5:].strip()
+        prog_low = prog.lower()
+
+        if prog_low in SITI_WEB:
+            webbrowser.open(SITI_WEB[prog_low])
+            parla(f"Ho aperto {prog}, Padrone~! Ehehe~", output)
+            return True
+
+        if prog_low.startswith("http") or ("." in prog_low and " " not in prog_low):
+            url = prog if prog.startswith("http") else "https://" + prog
+            webbrowser.open(url)
+            parla(f"Ho aperto {url}, Padrone~!", output)
+            return True
+
         try:
             subprocess.Popen(prog, shell=True)
             parla(f"Ho aperto {prog}, Padrone~!", output)
-        except Exception as e:
-            parla(f"Errore: {e}", output)
+        except Exception:
+            parla(f"Non riesco ad aprire '{prog}', Padrone~.", output)
         return True
 
-    # Sistema
+    # ---- SISTEMA ----
     if "info sistema" in c:
         if psutil:
             cpu = psutil.cpu_percent(interval=0.5)
@@ -677,6 +802,8 @@ def esegui(comando, output):
                 if b: bat = f", batteria {b.percent}%"
             except Exception: pass
             parla(f"CPU {cpu}%, RAM {ram.percent}%, Disco {disco.percent}%{bat}, Padrone~!", output)
+        else:
+            parla("psutil non installato, Padrone~", output)
         return True
     if "che ore" in c or "che ora" in c:
         parla(f"Sono le {datetime.datetime.now().strftime('%H:%M')}, Padrone~!", output)
@@ -702,12 +829,15 @@ def esegui(comando, output):
         parla("Annullato, Padrone~!", output)
         return True
 
-    # Appunti
+    # ---- APPUNTI ----
     if c.startswith("scrivi appunto"):
         t = cl.replace("scrivi appunto", "").strip()
-        with open(os.path.join(BASE_DIR, "appunti.txt"), "a", encoding="utf-8") as f:
-            f.write(f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}] {t}\n")
-        parla("Appunto salvato, Padrone~", output)
+        if t:
+            with open(os.path.join(BASE_DIR, "appunti.txt"), "a", encoding="utf-8") as f:
+                f.write(f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}] {t}\n")
+            parla("Appunto salvato, Padrone~", output)
+        else:
+            parla("Cosa scrivo, Padrone~?", output)
         return True
     if "leggi appunti" in c:
         p = os.path.join(BASE_DIR, "appunti.txt")
@@ -718,7 +848,7 @@ def esegui(comando, output):
             parla("Nessun appunto, Padrone~", output)
         return True
 
-    # Personalità
+    # ---- PERSONALITÀ ----
     if "chi sei" in c:
         parla("Shaula è la tua assistente devota, Padrone~! 🦂", output)
         return True
@@ -732,7 +862,7 @@ def esegui(comando, output):
         parla("Buongiorno, Padrone~! Shaula è felicissima di vederti! ☀️🦂", output)
         return True
 
-    # Plugin esterni
+    # ---- PLUGIN ----
     if os.path.exists(PLUGIN_FILE):
         try:
             import plugins
@@ -742,6 +872,12 @@ def esegui(comando, output):
                 if r: return True
         except Exception as e:
             print(f"Errore plugin: {e}")
+
+    # ---- ANTI-ALLUCINAZIONE ----
+    if sembra_comando(c):
+        parla(f"Shaula non ha capito il comando '{comando}', Padrone~! "
+              f"Prova a riformularlo. Ehehe, Shaula è ancora piccolina~ 🦂", output)
+        return True
 
     return False
 
@@ -768,11 +904,11 @@ class WakeWord(threading.Thread):
 class GUI:
     def __init__(self, root):
         self.root = root
-        root.title("🦂 S.H.A.U.L.A. v4.1 Ultimate")
+        root.title("🦂 S.H.A.U.L.A. v4.3")
         root.geometry("900x700")
         root.configure(bg="#1a1a2e")
 
-        tk.Label(root, text="🦂  S.H.A.U.L.A. Ultimate  🦂",
+        tk.Label(root, text="🦂  S.H.A.U.L.A.  🦂",
                  font=("Segoe UI", 22, "bold"),
                  bg="#1a1a2e", fg="#ff6b9d").pack(pady=(12, 0))
         tk.Label(root, text="La tua assistente devota, Padrone~!",
@@ -833,15 +969,15 @@ class GUI:
             self.scrivi("⚠️  Clicca il pulsante 🔑 API Key per inserire la chiave Gemini!\n")
         else:
             self.scrivi(f"{inizializza_gemini()}\n")
-        self.scrivi("💡 Chicche attive:\n")
+        self.scrivi("💡 Comandi principali:\n")
+        self.scrivi("   • 'apri youtube' / 'cerca youtube' / 'apri google'\n")
+        self.scrivi("   • 'cerca su youtube musica' / 'cerca carbonara'\n")
+        self.scrivi("   • 'timer 5 minuti' / 'imposta un timer di 20 secondi'\n")
+        self.scrivi("   • 'svegliami alle 7:30'\n")
+        self.scrivi("   • 'metti un po di musica' / 'play [canzone]' / 'pausa'\n")
+        self.scrivi("   • 'cosa vedi?' / 'screenshot' / 'minimizza tutto'\n")
         self.scrivi("   • Modalità: normale / tsundere / yandere / seria\n")
-        self.scrivi("   • Memoria automatica (dì 'mi chiamo X', 'abito a Y'...)\n")
-        self.scrivi("   • Timer: 'timer 5 minuti', 'svegliami alle 7:30'\n")
-        self.scrivi("   • Musica: 'metti musica', 'play [canzone]', 'pausa'\n")
-        self.scrivi("   • Visione: 'cosa vedi?', 'screenshot', 'minimizza tutto'\n")
-        self.scrivi("   • Utility: 'quanto fa 15% di 240', 'quanti giorni a Natale'\n")
-        self.scrivi("   • Ricerca: 'cerca X', 'notizie', 'meteo a Milano'\n")
-        self.scrivi("   • Volume, file, cartelle, spegnimento, tutto il resto\n\n")
+        self.scrivi("   • Memoria: 'mi chiamo X', 'abito a Y', 'ricorda che...'\n\n")
 
         threading.Thread(target=lambda: parla("Shaula è pronta, Padrone~!"), daemon=True).start()
         self.wake = None
