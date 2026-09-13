@@ -4,5 +4,9 @@
   "voce_attiva": true,
   "voce_rate": 180,
   "lingua": "it-IT",
-  "wake_word_attivo": false
+  "wake_word_attivo": false,
+  "modalita": "normale",
+  "nome_utente": "",
+  "compleanno": "",
+  "citta": "Campania"
 }
