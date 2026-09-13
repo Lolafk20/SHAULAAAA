@@ -14,11 +14,11 @@ jobs:
       - name: Installa dipendenze
         run: |
           python -m pip install --upgrade pip
-          pip install pyttsx3 SpeechRecognition pyaudio google-generativeai psutil Pillow keyboard duckduckgo-search pyinstaller
+          pip install pyttsx3 SpeechRecognition pyaudio google-generativeai psutil Pillow keyboard duckduckgo-search pycaw comtypes pytesseract pyinstaller
 
       - name: Compila exe
         run: |
-          pyinstaller --onefile --windowed --name SHAULA --add-data "config.json;." --hidden-import=pyaudio --hidden-import=speech_recognition --collect-all=google.generativeai --collect-all=duckduckgo_search shaula.py
+          pyinstaller --onefile --windowed --name SHAULA --add-data "config.json;." --hidden-import=pyaudio --hidden-import=speech_recognition --hidden-import=pycaw --hidden-import=comtypes --collect-all=google.generativeai --collect-all=duckduckgo_search shaula.py
 
       - uses: actions/upload-artifact@v4
         with:
