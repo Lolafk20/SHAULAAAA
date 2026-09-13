@@ -1,6 +1,5 @@
 # ============================================================
-# S.H.A.U.L.A. v4.0 - Ultimate Edition
-# Tutte le chicche integrate
+# S.H.A.U.L.A. v4.1 - Ultimate con Gemini Vision
 # ============================================================
 import os, sys, json, time, shutil, datetime, subprocess
 import threading, webbrowser, ctypes, random, re
@@ -38,12 +37,6 @@ try:
     from comtypes import CLSCTX_ALL
     from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
     PYCAW_OK = True
-except ImportError:
-    pass
-PYTESSERACT_OK = False
-try:
-    import pytesseract
-    PYTESSERACT_OK = True
 except ImportError:
     pass
 
@@ -85,7 +78,7 @@ CONFIG = carica_json(CONFIG_FILE, {
     "voce_rate": 180,
     "lingua": "it-IT",
     "wake_word_attivo": False,
-    "modalita": "normale",   # normale, tsundere, yandere, seria
+    "modalita": "normale",
     "nome_utente": "",
     "compleanno": "",
     "citta": "Roma"
@@ -130,7 +123,7 @@ def parla(testo, cb=None):
             pass
 
 # ============================================================
-# GEMINI - con system prompt dinamico
+# GEMINI
 # ============================================================
 modello = None
 chat = None
@@ -190,7 +183,6 @@ def inizializza_gemini():
     return "❌ Nessun modello Gemini disponibile"
 
 def ricarica_gemini():
-    """Ricarica il modello con il nuovo system prompt (es. cambio modalità)"""
     if not genai or not CONFIG.get("gemini_api_key"):
         return "⚠️ Gemini non configurato"
     try:
@@ -227,7 +219,6 @@ def chiedi_gemini(testo):
         return f"Errore: {e}"
 
 def estrai_info_automatiche(testo, output):
-    """Analizza il testo e salva automaticamente info personali"""
     t = testo.lower()
     patterns = {
         r"mi chiamo (\w+)": "nome",
@@ -300,7 +291,7 @@ def rispondi_con_ricerca(query, output):
         parla(risultati[0].get('body', '')[:300], output)
 
 # ============================================================
-# VOLUME (pycaw)
+# VOLUME
 # ============================================================
 def cambia_volume(delta):
     if PYCAW_OK:
@@ -335,9 +326,6 @@ def toggle_mute():
         return True
     return False
 
-# ============================================================
-# MEDIA KEYS
-# ============================================================
 def media_key(tasto):
     if keyboard:
         try:
@@ -348,7 +336,7 @@ def media_key(tasto):
     return False
 
 # ============================================================
-# TIMER E SVEGLIA
+# TIMER
 # ============================================================
 def avvia_timer(secondi, descrizione, output):
     def _thread():
@@ -357,30 +345,38 @@ def avvia_timer(secondi, descrizione, output):
     threading.Thread(target=_thread, daemon=True).start()
 
 # ============================================================
-# VISIONE SCHERMO (OCR)
+# VISIONE SCHERMO — Gemini Vision (no Tesseract)
 # ============================================================
 def analizza_schermo(output):
     if not PIL_ImageGrab:
         parla("Pillow non installato, Padrone~", output)
         return
+    if not genai or not CONFIG.get("gemini_api_key"):
+        parla("Serve la API key Gemini per vedere lo schermo, Padrone~", output)
+        return
     try:
         img = PIL_ImageGrab.grab()
         p = os.path.join(BASE_DIR, "_temp_screen.png")
         img.save(p)
-        if PYTESSERACT_OK:
-            testo = pytesseract.image_to_string(img, lang='ita')
-            testo = testo[:1500]
-            if chat:
-                risposta = chat.send_message(f"Questo è il testo sullo schermo del Padrone:\n\n{testo}\n\nCosa ne pensi? Riassumi brevemente.")
-                parla(risposta.text, output)
-            else:
-                parla(f"Sullo schermo c'è scritto: {testo[:300]}", output)
-        else:
-            parla("OCR non installato, Padrone~. Non posso leggere lo schermo.", output)
+
+        from PIL import Image as _PILImage
+        img_pil = _PILImage.open(p)
+
+        vision_model = genai.GenerativeModel(MODELLO_ATTIVO or "gemini-2.0-flash")
+        prompt = (
+            "Questa è un'immagine dello schermo del mio Padrone. "
+            "Descrivi cosa vedi in massimo 3 frasi, con la personalità di Shaula "
+            "(devota, '~', 'ehehe', emoji 🦂💕✨). "
+            "Se c'è testo importante sullo schermo, leggilo. "
+            "Se c'è un errore o un problema, dillo al Padrone."
+        )
+        risposta = vision_model.generate_content([prompt, img_pil])
+        parla(risposta.text, output)
+
         try: os.remove(p)
         except: pass
     except Exception as e:
-        parla(f"Errore: {e}", output)
+        parla(f"Errore analisi schermo: {e}", output)
 
 # ============================================================
 # COMANDI PRINCIPALI
@@ -392,15 +388,13 @@ def esegui(comando, output):
     c = comando.lower().strip()
     cl = comando.strip()
 
-    # ---- ESCI / CHIUDI ----
     if c in ["esci", "arrivederci", "chiudi shaula"]:
         parla("Shaula ti saluta, Padrone~! Ehehe!", output)
         return "ESCI"
 
-    # ---- INFO AUTOMATICHE ----
     estrai_info_automatiche(cl, output)
 
-    # ---- CAMBIO MODALITÀ ----
+    # Cambio modalità
     if "modalità" in c or "modalita" in c:
         for mod in ["normale", "tsundere", "yandere", "seria"]:
             if mod in c:
@@ -412,7 +406,7 @@ def esegui(comando, output):
         parla("Modalità non riconosciuta. Prova: normale, tsundere, yandere, seria", output)
         return True
 
-    # ---- MEMORIA ----
+    # Memoria
     if c.startswith("ricorda che"):
         MEMORIA["ricordi"].append(cl[11:].strip())
         salva_json(MEMORIA_FILE, MEMORIA)
@@ -432,7 +426,7 @@ def esegui(comando, output):
         parla("Memoria azzerata, Padrone~", output)
         return True
 
-    # ---- RIASSUNTO STORICO ----
+    # Riassunto conversazione
     if "riassumi" in c and ("conversazione" in c or "discorso" in c or "detto" in c):
         if not chat or not STORICO["conversazioni"]:
             parla("Nessuna conversazione da riassumere, Padrone~", output)
@@ -446,7 +440,7 @@ def esegui(comando, output):
             parla(f"Errore: {e}", output)
         return True
 
-    # ---- RICERCA WEB CON VOCE ----
+    # Ricerca web con voce
     if c.startswith("cerca ") and not c.startswith("cerca su "):
         q = cl[6:].strip()
         if q:
@@ -475,12 +469,12 @@ def esegui(comando, output):
         parla(f"Apro {url}, Padrone~", output)
         return True
 
-    # ---- NOTIZIE ----
+    # Notizie
     if "notizie" in c:
         threading.Thread(target=rispondi_con_ricerca, args=("notizie di oggi", output), daemon=True).start()
         return True
 
-    # ---- METEO ----
+    # Meteo
     if "meteo" in c or "che tempo fa" in c:
         città = CONFIG.get("citta", "Roma")
         m = re.search(r"(?:a|di|per)\s+([A-Za-zÀ-ÿ]+)", cl)
@@ -488,7 +482,7 @@ def esegui(comando, output):
         threading.Thread(target=rispondi_con_ricerca, args=(f"meteo {città} oggi", output), daemon=True).start()
         return True
 
-    # ---- MUSICA ----
+    # Musica
     if "metti musica" in c or "play musica" in c or c == "musica":
         webbrowser.open("https://music.youtube.com/")
         parla("Shaula mette la musica per te, Padrone~! 🎵", output)
@@ -498,11 +492,11 @@ def esegui(comando, output):
         webbrowser.open(f"https://music.youtube.com/search?q={q.strip()}")
         parla(f"Riproduco {q}, Padrone~", output)
         return True
-    if "pausa musica" in c or "pausa" == c:
+    if "pausa musica" in c or c == "pausa":
         media_key('play/pause media')
         parla("Pausa, Padrone~", output)
         return True
-    if "canzone successiva" in c or "prossima canzone" in c or "skip" == c:
+    if "canzone successiva" in c or "prossima canzone" in c or c == "skip":
         media_key('next track')
         parla("Cambio canzone, Padrone~", output)
         return True
@@ -511,7 +505,7 @@ def esegui(comando, output):
         parla("Torno indietro, Padrone~", output)
         return True
 
-    # ---- VOLUME ----
+    # Volume
     if any(p in c for p in ["alza volume", "alza il volume", "alzare volume", "volume su", "aumenta volume", "più volume", "piu volume"]):
         cambia_volume(0.10)
         parla("Volume alzato, Padrone~!", output)
@@ -525,7 +519,7 @@ def esegui(comando, output):
         parla("Silenziato, Padrone~", output)
         return True
 
-    # ---- TIMER / SVEGLIA ----
+    # Timer e sveglia
     m = re.search(r"timer (\d+)\s*(secondi|minuti|ore)", c)
     if m:
         val = int(m.group(1))
@@ -546,14 +540,14 @@ def esegui(comando, output):
         parla(f"Shaula ti sveglierà alle {ora}:{minuto:02d}, Padrone~!", output)
         return True
 
-    # ---- SCHERMO / FINESTRE ----
+    # Schermo e finestre
     if "screenshot" in c:
         if PIL_ImageGrab:
             n = f"screenshot_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
             PIL_ImageGrab.grab().save(os.path.join(desktop(), n))
             parla(f"Screenshot salvato: {n}", output)
         return True
-    if "cosa vedi" in c or "leggi schermo" in c or "leggi lo schermo" in c:
+    if "cosa vedi" in c or "leggi schermo" in c or "leggi lo schermo" in c or "cosa c'è sullo schermo" in c:
         threading.Thread(target=analizza_schermo, args=(output,), daemon=True).start()
         return True
     if "minimizza tutto" in c or "mostra desktop" in c:
@@ -578,10 +572,9 @@ def esegui(comando, output):
             parla(f"Errore: {e}", output)
         return True
 
-    # ---- UTILITY ----
+    # Utility
     m = re.search(r"converti ([\d.]+) ([\w]+) in ([\w]+)", c)
     if m:
-        import urllib.request
         q = f"{m.group(1)} {m.group(2)} in {m.group(3)}"
         webbrowser.open(f"https://www.google.com/search?q={q}")
         parla(f"Cerco la conversione, Padrone~", output)
@@ -613,7 +606,7 @@ def esegui(comando, output):
             parla("Data non valida, Padrone~", output)
         return True
 
-    # ---- CARTELLE / FILE ----
+    # Cartelle e file
     if "crea cartella" in c:
         n = cl.lower().replace("crea cartella", "").strip()
         if n:
@@ -662,7 +655,7 @@ def esegui(comando, output):
             parla("Non trovata, Padrone~", output)
         return True
 
-    # ---- PROGRAMMI ----
+    # Programmi
     if c.startswith("apri "):
         prog = cl[5:].strip()
         try:
@@ -672,7 +665,7 @@ def esegui(comando, output):
             parla(f"Errore: {e}", output)
         return True
 
-    # ---- SISTEMA ----
+    # Sistema
     if "info sistema" in c:
         if psutil:
             cpu = psutil.cpu_percent(interval=0.5)
@@ -709,7 +702,7 @@ def esegui(comando, output):
         parla("Annullato, Padrone~!", output)
         return True
 
-    # ---- APPUNTI ----
+    # Appunti
     if c.startswith("scrivi appunto"):
         t = cl.replace("scrivi appunto", "").strip()
         with open(os.path.join(BASE_DIR, "appunti.txt"), "a", encoding="utf-8") as f:
@@ -725,7 +718,7 @@ def esegui(comando, output):
             parla("Nessun appunto, Padrone~", output)
         return True
 
-    # ---- PERSONALITÀ ----
+    # Personalità
     if "chi sei" in c:
         parla("Shaula è la tua assistente devota, Padrone~! 🦂", output)
         return True
@@ -739,7 +732,7 @@ def esegui(comando, output):
         parla("Buongiorno, Padrone~! Shaula è felicissima di vederti! ☀️🦂", output)
         return True
 
-    # ---- PLUGIN ESTERNI ----
+    # Plugin esterni
     if os.path.exists(PLUGIN_FILE):
         try:
             import plugins
@@ -775,7 +768,7 @@ class WakeWord(threading.Thread):
 class GUI:
     def __init__(self, root):
         self.root = root
-        root.title("🦂 S.H.A.U.L.A. v4.0 Ultimate")
+        root.title("🦂 S.H.A.U.L.A. v4.1 Ultimate")
         root.geometry("900x700")
         root.configure(bg="#1a1a2e")
 
@@ -845,7 +838,7 @@ class GUI:
         self.scrivi("   • Memoria automatica (dì 'mi chiamo X', 'abito a Y'...)\n")
         self.scrivi("   • Timer: 'timer 5 minuti', 'svegliami alle 7:30'\n")
         self.scrivi("   • Musica: 'metti musica', 'play [canzone]', 'pausa'\n")
-        self.scrivi("   • Schermo: 'cosa vedi?', 'screenshot', 'minimizza tutto'\n")
+        self.scrivi("   • Visione: 'cosa vedi?', 'screenshot', 'minimizza tutto'\n")
         self.scrivi("   • Utility: 'quanto fa 15% di 240', 'quanti giorni a Natale'\n")
         self.scrivi("   • Ricerca: 'cerca X', 'notizie', 'meteo a Milano'\n")
         self.scrivi("   • Volume, file, cartelle, spegnimento, tutto il resto\n\n")
