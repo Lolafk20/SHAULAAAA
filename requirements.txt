@@ -6,4 +6,7 @@ psutil
 Pillow
 keyboard
 duckduckgo-search
+pycaw
+comtypes
+pytesseract
 pyinstaller
