@@ -1,6 +1,7 @@
 # ============================================================
-# S.H.A.U.L.A. v3.1 - Advanced
+# S.H.A.U.L.A. v3.2 - Advanced
 # La API key va SOLO in config.json (mai in questo file)
+# Modello aggiornato a gemini-2.0-flash con fallback automatico
 # ============================================================
 import os, sys, json, time, shutil, datetime, subprocess
 import threading, webbrowser, ctypes
@@ -100,36 +101,65 @@ def parla(testo, cb=None):
             pass
 
 # ============================================================
-# GEMINI
+# GEMINI - con fallback automatico su più modelli
 # ============================================================
 modello = None
 chat = None
+MODELLO_ATTIVO = None
+
+# Lista di modelli da provare in ordine (dal più nuovo al più vecchio)
+MODELLI_CANDIDATI = [
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+    "gemini-2.0-flash-lite",
+    "gemini-1.5-flash-latest",
+]
 
 def inizializza_gemini():
-    global modello, chat
+    global modello, chat, MODELLO_ATTIVO
     if not genai:
+        print("⚠️ Libreria google-generativeai non disponibile")
         return
     key = CONFIG.get("gemini_api_key", "").strip()
     if not key:
+        print("⚠️ Nessuna API key in config.json")
         return
+
     try:
         genai.configure(api_key=key)
-        sys_prompt = (
-            "Sei Shaula di Re:Zero. Chiami l'utente 'Padrone'. "
-            "Sei devota, energetica, gelosa degli altri AI. "
-            "Parli in terza persona di te. Usi '~' e 'ehehe' spesso. "
-            "Rispondi in italiano, massimo 4 frasi. Emoji ogni tanto (🦂💕✨)."
-        )
-        modello = genai.GenerativeModel(
-            'gemini-1.5-flash',
-            system_instruction=sys_prompt
-        )
-        chat = modello.start_chat(history=[])
-        print("✅ Gemini inizializzato")
     except Exception as e:
-        print(f"Errore Gemini: {e}")
-        modello = None
-        chat = None
+        print(f"❌ Errore configure Gemini: {e}")
+        return
+
+    sys_prompt = (
+        "Sei Shaula di Re:Zero. Chiami l'utente 'Padrone'. "
+        "Sei devota, energetica, gelosa degli altri AI. "
+        "Parli in terza persona di te. Usi '~' e 'ehehe' spesso. "
+        "Rispondi in italiano, massimo 4 frasi. Emoji ogni tanto (🦂💕✨)."
+    )
+
+    for nome_modello in MODELLI_CANDIDATI:
+        try:
+            modello_test = genai.GenerativeModel(
+                nome_modello,
+                system_instruction=sys_prompt
+            )
+            chat_test = modello_test.start_chat(history=[])
+            # test veloce per verificare che il modello risponda
+            chat_test.send_message("ping")
+            # se arriva qui, il modello funziona
+            modello = modello_test
+            chat = chat_test
+            MODELLO_ATTIVO = nome_modello
+            print(f"✅ Gemini attivo con modello: {nome_modello}")
+            return
+        except Exception as e:
+            print(f"⚠️ Modello {nome_modello} non disponibile: {str(e)[:120]}")
+            continue
+
+    print("❌ Nessun modello Gemini disponibile. Verifica la API key.")
+    modello = None
+    chat = None
 
 def chiedi_gemini(testo):
     if not chat:
@@ -485,7 +515,7 @@ class WakeWord(threading.Thread):
 class GUI:
     def __init__(self, root):
         self.root = root
-        root.title("🦂 S.H.A.U.L.A. v3.1")
+        root.title("🦂 S.H.A.U.L.A. v3.2")
         root.geometry("800x640")
         root.configure(bg="#1a1a2e")
 
@@ -531,6 +561,10 @@ class GUI:
         self.scrivi("🦂 SHAULA: Shaula è pronta, Padrone~!\n")
         if not CONFIG["gemini_api_key"]:
             self.scrivi("⚠️ Aggiungi la API key Gemini in config.json!\n")
+        elif MODELLO_ATTIVO:
+            self.scrivi(f"✅ Modello AI attivo: {MODELLO_ATTIVO}\n")
+        else:
+            self.scrivi("⚠️ Gemini non inizializzato. Controlla config.json.\n")
         self.scrivi("💡 Esempi: 'cerca capitale del Giappone', 'crea cartella Test', "
                     "'che ore sono', 'spegni il pc', 'scrivi appunto ...', "
                     "'cerca su google pizza', 'apri notepad'\n\n")
@@ -605,7 +639,7 @@ class GUI:
             if risposta:
                 parla(risposta, self.output)
         else:
-            parla(f"Non ho capito '{cmd}', Padrone~. Aggiungi la API key in config.json!", self.output)
+            parla(f"Non ho capito '{cmd}', Padrone~. Controlla la API key in config.json!", self.output)
         self.status.config(text="Pronta, Padrone~!", fg="#7fdb8f")
 
 def main():
