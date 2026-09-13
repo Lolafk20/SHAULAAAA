@@ -1,5 +1,5 @@
 # ============================================================
-# S.H.A.U.L.A. v4.3 - Fix comandi + anti-allucinazione Gemini
+# S.H.A.U.L.A. v4.4 - Modelli riordinati per quota gratuita
 # ============================================================
 import os, sys, json, time, shutil, datetime, subprocess
 import threading, webbrowser, ctypes, random, re
@@ -179,11 +179,12 @@ modello = None
 chat = None
 MODELLO_ATTIVO = None
 
+# ✅ MODELLI RIORDINATI: prima quelli con quota gratuita alta (1000/giorno)
 MODELLI_CANDIDATI = [
-    "gemini-2.5-flash",
-    "gemini-2.0-flash",
-    "gemini-2.0-flash-lite",
-    "gemini-1.5-flash-latest",
+    "gemini-2.5-flash-lite",   # 1000 richieste/giorno gratis
+    "gemini-2.0-flash-lite",   # 1000 richieste/giorno gratis
+    "gemini-2.0-flash",        # 200 richieste/giorno gratis
+    "gemini-2.5-flash",        # 20 richieste/giorno (solo ultima spiaggia)
 ]
 
 PROMPT_BASE = (
@@ -416,7 +417,7 @@ def analizza_schermo(output):
         from PIL import Image as _PILImage
         img_pil = _PILImage.open(p)
 
-        vision_model = genai.GenerativeModel(MODELLO_ATTIVO or "gemini-2.0-flash")
+        vision_model = genai.GenerativeModel(MODELLO_ATTIVO or "gemini-2.0-flash-lite")
         prompt = (
             "Questa è un'immagine dello schermo del mio Padrone. "
             "Descrivi cosa vedi in massimo 3 frasi, con la personalità di Shaula "
@@ -494,7 +495,7 @@ def esegui(comando, output):
             parla(f"Errore: {e}", output)
         return True
 
-    # ---- RICERCA SU SITI SPECIFICI (PRIMA della generica) ----
+    # ---- RICERCA SU SITI SPECIFICI ----
     if "cerca su google" in c or "cerca google" in c:
         q = re.sub(r"cerca (su )?google", "", c).strip()
         if not q:
@@ -523,7 +524,6 @@ def esegui(comando, output):
         parla(f"Cerco '{q}' su Wikipedia, Padrone~", output)
         return True
 
-    # "cerca youtube" / "cerca google" / "cerca netflix" → apre il sito
     m = re.match(r"^cerca\s+(\w+)$", c)
     if m and m.group(1) in SITI_WEB:
         sito = m.group(1)
@@ -531,7 +531,7 @@ def esegui(comando, output):
         parla(f"Apro {sito}, Padrone~!", output)
         return True
 
-    # ---- RICERCA GENERICA CON VOCE ----
+    # ---- RICERCA GENERICA ----
     if c.startswith("cerca ") and not c.startswith("cerca su "):
         q = cl[6:].strip()
         if q:
@@ -563,7 +563,7 @@ def esegui(comando, output):
         threading.Thread(target=rispondi_con_ricerca, args=(f"meteo {città} oggi", output), daemon=True).start()
         return True
 
-    # ---- MUSICA (qualsiasi variante) ----
+    # ---- MUSICA ----
     parole_musica = [
         "metti musica", "play musica", "metti un po di musica",
         "metti un pò di musica", "metti un po' di musica", "metti un pò",
@@ -611,7 +611,7 @@ def esegui(comando, output):
         parla("Silenziato, Padrone~", output)
         return True
 
-    # ---- TIMER (qualsiasi forma) ----
+    # ---- TIMER ----
     m = re.search(r"timer\D*(\d+)\s*(secondi|secondo|sec|minuti|minuto|min|ore|ora|h)\b", c)
     if m:
         val = int(m.group(1))
@@ -904,7 +904,7 @@ class WakeWord(threading.Thread):
 class GUI:
     def __init__(self, root):
         self.root = root
-        root.title("🦂 S.H.A.U.L.A. v4.3")
+        root.title("🦂 S.H.A.U.L.A. v4.4")
         root.geometry("900x700")
         root.configure(bg="#1a1a2e")
 
@@ -969,15 +969,8 @@ class GUI:
             self.scrivi("⚠️  Clicca il pulsante 🔑 API Key per inserire la chiave Gemini!\n")
         else:
             self.scrivi(f"{inizializza_gemini()}\n")
-        self.scrivi("💡 Comandi principali:\n")
-        self.scrivi("   • 'apri youtube' / 'cerca youtube' / 'apri google'\n")
-        self.scrivi("   • 'cerca su youtube musica' / 'cerca carbonara'\n")
-        self.scrivi("   • 'timer 5 minuti' / 'imposta un timer di 20 secondi'\n")
-        self.scrivi("   • 'svegliami alle 7:30'\n")
-        self.scrivi("   • 'metti un po di musica' / 'play [canzone]' / 'pausa'\n")
-        self.scrivi("   • 'cosa vedi?' / 'screenshot' / 'minimizza tutto'\n")
-        self.scrivi("   • Modalità: normale / tsundere / yandere / seria\n")
-        self.scrivi("   • Memoria: 'mi chiamo X', 'abito a Y', 'ricorda che...'\n\n")
+        self.scrivi("💡 Modelli in ordine di quota gratuita (1000/giorno):\n")
+        self.scrivi("   gemini-2.5-flash-lite → 2.0-flash-lite → 2.0-flash → 2.5-flash\n\n")
 
         threading.Thread(target=lambda: parla("Shaula è pronta, Padrone~!"), daemon=True).start()
         self.wake = None
