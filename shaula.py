@@ -1,5 +1,5 @@
 # ============================================================
-# S.H.A.U.L.A. v4.4 - Modelli riordinati per quota gratuita
+# S.H.A.U.L.A. v4.5 - Gestione errori Gemini migliorata
 # ============================================================
 import os, sys, json, time, shutil, datetime, subprocess
 import threading, webbrowser, ctypes, random, re
@@ -179,12 +179,12 @@ modello = None
 chat = None
 MODELLO_ATTIVO = None
 
-# ✅ MODELLI RIORDINATI: prima quelli con quota gratuita alta (1000/giorno)
+# Modelli in ordine di quota gratuita (dal più permissivo)
 MODELLI_CANDIDATI = [
-    "gemini-2.5-flash-lite",   # 1000 richieste/giorno gratis
-    "gemini-2.0-flash-lite",   # 1000 richieste/giorno gratis
-    "gemini-2.0-flash",        # 200 richieste/giorno gratis
-    "gemini-2.5-flash",        # 20 richieste/giorno (solo ultima spiaggia)
+    "gemini-2.5-flash-lite",   # 1000/giorno
+    "gemini-2.0-flash-lite",   # 1000/giorno
+    "gemini-2.0-flash",        # 200/giorno
+    "gemini-2.5-flash",        # 20/giorno
 ]
 
 PROMPT_BASE = (
@@ -213,28 +213,61 @@ def build_system_prompt():
     return PROMPT_BASE.format(nome=nome_txt) + mod_txt
 
 def inizializza_gemini():
+    """Inizializza Gemini mostrando errori chiari e distinguendo i casi."""
     global modello, chat, MODELLO_ATTIVO
-    if not genai: return "⚠️ Libreria google-generativeai mancante"
+    if not genai:
+        return "⚠️ Libreria google-generativeai mancante"
+
     key = CONFIG.get("gemini_api_key", "").strip()
-    if not key: return "⚠️ Nessuna API key configurata"
+    if not key:
+        return "⚠️ Nessuna API key configurata. Clicca 🔑 API Key."
+
+    # Configura la chiave
     try:
         genai.configure(api_key=key)
     except Exception as e:
-        return f"❌ Errore configure: {e}"
+        return f"❌ Errore configure: {str(e)[:150]}"
 
+    # Verifica che la chiave funzioni listando i modelli
+    try:
+        modelli_disponibili = [m.name for m in genai.list_models()]
+        print(f"📋 Modelli disponibili: {len(modelli_disponibili)}")
+        # Filtra solo i modelli che supportano generateContent
+        supportati = [m.name for m in genai.list_models()
+                      if 'generateContent' in m.supported_generation_methods]
+        print(f"📋 Modelli supportati: {len(supportati)}")
+    except Exception as e:
+        err = str(e)
+        if "API_KEY_INVALID" in err or "API key not valid" in err:
+            return "❌ Chiave API non valida. Controlla di averla copiata bene."
+        if "PERMISSION_DENIED" in err:
+            return "❌ Chiave API senza permessi. Abilita l'API Gemini su Google Cloud."
+        return f"❌ Errore verifica chiave: {err[:150]}"
+
+    # Prova i modelli in ordine
     sys_prompt = build_system_prompt()
+    errori = []
+
     for nome_modello in MODELLI_CANDIDATI:
         try:
             modello_test = genai.GenerativeModel(nome_modello, system_instruction=sys_prompt)
             chat_test = modello_test.start_chat(history=[])
+            # Prova a mandare un messaggio minimo per verificare che funzioni
             chat_test.send_message("ping")
             modello = modello_test
             chat = chat_test
             MODELLO_ATTIVO = nome_modello
             return f"✅ Modello attivo: {nome_modello} (modalità: {CONFIG.get('modalita','normale')})"
         except Exception as e:
-            print(f"⚠️ {nome_modello}: {str(e)[:100]}")
+            err_msg = str(e)[:200]
+            errori.append(f"  • {nome_modello}: {err_msg[:80]}")
+            print(f"⚠️ {nome_modello}: {err_msg}")
             continue
+
+    # Nessun modello ha funzionato
+    if errori:
+        dettaglio = "\n".join(errori)
+        return f"❌ Nessun modello disponibile.\nDettagli:\n{dettaglio}"
     return "❌ Nessun modello Gemini disponibile"
 
 def ricarica_gemini():
@@ -259,19 +292,61 @@ def salva_storico(utente, shaula):
     salva_json(STORICO_FILE, STORICO)
 
 def chiedi_gemini(testo):
-    if not chat: return None
+    """Chiama Gemini, con fallback automatico su modelli alternativi se quota esaurita."""
+    global chat, MODELLO_ATTIVO, modello
+    if not chat:
+        return None
+
+    ctx = ""
+    if MEMORIA["ricordi"]:
+        ctx += "Ricordi: " + "; ".join(MEMORIA["ricordi"][-10:]) + ". "
+    if MEMORIA["info"]:
+        ctx += "Info sul Padrone: " + json.dumps(MEMORIA["info"], ensure_ascii=False) + ". "
+
     try:
-        ctx = ""
-        if MEMORIA["ricordi"]:
-            ctx += "Ricordi: " + "; ".join(MEMORIA["ricordi"][-10:]) + ". "
-        if MEMORIA["info"]:
-            ctx += "Info sul Padrone: " + json.dumps(MEMORIA["info"], ensure_ascii=False) + ". "
         r = chat.send_message(ctx + testo)
         risposta = r.text
         salva_storico(testo, risposta)
         return risposta
     except Exception as e:
-        return f"Errore: {e}"
+        err = str(e)
+
+        # Quota esaurita → prova il modello successivo
+        if "429" in err or "quota" in err.lower() or "exceeded" in err.lower():
+            try:
+                idx = MODELLI_CANDIDATI.index(MODELLO_ATTIVO) if MODELLO_ATTIVO in MODELLI_CANDIDATI else -1
+            except ValueError:
+                idx = -1
+
+            # Prova i modelli successivi
+            for i in range(idx + 1, len(MODELLI_CANDIDATI)):
+                nuovo_modello = MODELLI_CANDIDATI[i]
+                try:
+                    sys_prompt = build_system_prompt()
+                    modello = genai.GenerativeModel(nuovo_modello, system_instruction=sys_prompt)
+                    chat = modello.start_chat(history=[])
+                    MODELLO_ATTIVO = nuovo_modello
+                    r = chat.send_message(ctx + testo)
+                    salva_storico(testo, r.text)
+                    return r.text
+                except Exception as e2:
+                    print(f"⚠️ Fallback su {nuovo_modello} fallito: {str(e2)[:100]}")
+                    continue
+
+            # Tutti i modelli esauriti
+            return ("⚠️ Quota gratuita esaurita per oggi, Padrone~! "
+                    "Riprova domani (la quota si resetta a mezzanotte PT = 9:00 italiane) "
+                    "oppure crea una nuova API key con un altro account Google. 🦂")
+
+        # Altri errori
+        if "API_KEY_INVALID" in err:
+            return "❌ La chiave API non è più valida. Clicca 🔑 API Key per aggiornarla."
+        if "SAFETY" in err or "blocked" in err.lower():
+            return "⚠️ Gemini ha bloccato questa risposta per motivi di sicurezza, Padrone~"
+        if "DEADLINE" in err or "timeout" in err.lower():
+            return "⚠️ Timeout nella risposta, Padrone~. Riprova."
+
+        return f"Errore: {err[:200]}"
 
 def estrai_info_automatiche(testo, output):
     t = testo.lower()
@@ -337,11 +412,9 @@ def rispondi_con_ricerca(query, output):
     for i, r in enumerate(risultati, 1):
         contesto += f"{i}. {r.get('title','')}: {r.get('body','')[:200]}\n"
     contesto += f"\nDomanda: {query}\nRispondi in 2-3 frasi con personalità Shaula."
-    if chat:
-        try:
-            parla(chat.send_message(contesto).text, output)
-        except Exception as e:
-            parla(f"Errore: {e}", output)
+    risposta = chiedi_gemini(contesto)
+    if risposta:
+        parla(risposta, output)
     else:
         parla(risultati[0].get('body', '')[:300], output)
 
@@ -431,7 +504,11 @@ def analizza_schermo(output):
         try: os.remove(p)
         except: pass
     except Exception as e:
-        parla(f"Errore analisi schermo: {e}", output)
+        err = str(e)
+        if "429" in err or "quota" in err.lower():
+            parla("⚠️ Quota esaurita anche per la visione, Padrone~", output)
+        else:
+            parla(f"Errore analisi schermo: {err[:150]}", output)
 
 # ============================================================
 # COMANDI
@@ -488,11 +565,8 @@ def esegui(comando, output):
             return True
         ultime = STORICO["conversazioni"][-20:]
         testo = "\n".join(f"Tu: {x['utente']}\nShaula: {x['shaula']}" for x in ultime)
-        try:
-            r = chat.send_message(f"Riassumi questa conversazione in 3 frasi:\n\n{testo}")
-            parla(r.text, output)
-        except Exception as e:
-            parla(f"Errore: {e}", output)
+        risposta = chiedi_gemini(f"Riassumi questa conversazione in 3 frasi:\n\n{testo}")
+        parla(risposta or "Errore nel riassunto, Padrone~", output)
         return True
 
     # ---- RICERCA SU SITI SPECIFICI ----
@@ -904,7 +978,7 @@ class WakeWord(threading.Thread):
 class GUI:
     def __init__(self, root):
         self.root = root
-        root.title("🦂 S.H.A.U.L.A. v4.4")
+        root.title("🦂 S.H.A.U.L.A. v4.5")
         root.geometry("900x700")
         root.configure(bg="#1a1a2e")
 
@@ -969,8 +1043,7 @@ class GUI:
             self.scrivi("⚠️  Clicca il pulsante 🔑 API Key per inserire la chiave Gemini!\n")
         else:
             self.scrivi(f"{inizializza_gemini()}\n")
-        self.scrivi("💡 Modelli in ordine di quota gratuita (1000/giorno):\n")
-        self.scrivi("   gemini-2.5-flash-lite → 2.0-flash-lite → 2.0-flash → 2.5-flash\n\n")
+        self.scrivi("💡 Se vedi errori di quota, riprova più tardi o usa un'altra API key.\n\n")
 
         threading.Thread(target=lambda: parla("Shaula è pronta, Padrone~!"), daemon=True).start()
         self.wake = None
@@ -1057,10 +1130,9 @@ class GUI:
         if r is True:
             self.status.config(text="Pronta", fg="#7fdb8f")
             return
-        if chat:
-            risposta = chiedi_gemini(cmd)
-            if risposta:
-                parla(risposta, self.output)
+        risposta = chiedi_gemini(cmd)
+        if risposta:
+            parla(risposta, self.output)
         else:
             parla("Shaula non ha il cervello AI attivo! Clicca 🔑 API Key.", self.output)
         self.status.config(text="Pronta", fg="#7fdb8f")
