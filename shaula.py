@@ -1,15 +1,15 @@
 # ============================================================
-# S.H.A.U.L.A. v3.5 - Fix import + chiavi AIzaSy/AQ.Ab8
+# S.H.A.U.L.A. v4.0 - Ultimate Edition
+# Tutte le chicche integrate
 # ============================================================
 import os, sys, json, time, shutil, datetime, subprocess
-import threading, webbrowser, ctypes
+import threading, webbrowser, ctypes, random, re
 import importlib
 
 import tkinter as tk
 from tkinter import scrolledtext, simpledialog
 
 def try_import(name):
-    """Importa un modulo in modo sicuro, gestendo sottomoduli (es. google.generativeai)."""
     try:
         return importlib.import_module(name)
     except ImportError:
@@ -32,6 +32,20 @@ try:
     PIL_ImageGrab = _IG
 except ImportError:
     pass
+PYCAW_OK = False
+try:
+    from ctypes import cast, POINTER
+    from comtypes import CLSCTX_ALL
+    from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+    PYCAW_OK = True
+except ImportError:
+    pass
+PYTESSERACT_OK = False
+try:
+    import pytesseract
+    PYTESSERACT_OK = True
+except ImportError:
+    pass
 
 # ============================================================
 # PERCORSI
@@ -43,27 +57,25 @@ else:
 
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
 MEMORIA_FILE = os.path.join(BASE_DIR, "memoria.json")
-
-print(f"📁 Cartella SHAULA: {BASE_DIR}")
-print(f"📄 File config: {CONFIG_FILE}")
+STORICO_FILE = os.path.join(BASE_DIR, "storico.json")
+PLUGIN_FILE = os.path.join(BASE_DIR, "plugins.py")
+PROMEMORIA_FILE = os.path.join(BASE_DIR, "promemoria.json")
 
 def carica_json(p, default):
     if os.path.exists(p):
         try:
             with open(p, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except Exception as e:
-            print(f"Errore lettura config: {e}")
+        except Exception:
+            pass
     return default
 
 def salva_json(p, d):
     try:
         with open(p, "w", encoding="utf-8") as f:
             json.dump(d, f, indent=2, ensure_ascii=False)
-        print(f"✅ Salvato in: {p}")
         return True
-    except Exception as e:
-        print(f"❌ Errore salvataggio: {e}")
+    except Exception:
         return False
 
 CONFIG = carica_json(CONFIG_FILE, {
@@ -72,14 +84,18 @@ CONFIG = carica_json(CONFIG_FILE, {
     "voce_attiva": True,
     "voce_rate": 180,
     "lingua": "it-IT",
-    "wake_word_attivo": False
+    "wake_word_attivo": False,
+    "modalita": "normale",   # normale, tsundere, yandere, seria
+    "nome_utente": "",
+    "compleanno": "",
+    "citta": "Roma"
 })
-MEMORIA = carica_json(MEMORIA_FILE, {"ricordi": []})
+MEMORIA = carica_json(MEMORIA_FILE, {"ricordi": [], "preferenze": {}, "info": {}})
+STORICO = carica_json(STORICO_FILE, {"conversazioni": []})
+PROMEMORIA = carica_json(PROMEMORIA_FILE, [])
 
 def chiave_valida(chiave):
-    """Accetta sia AIzaSy... che AQ.Ab8..."""
-    if not chiave:
-        return False
+    if not chiave: return False
     c = chiave.strip()
     return c.startswith("AIza") or c.startswith("AQ.")
 
@@ -114,7 +130,7 @@ def parla(testo, cb=None):
             pass
 
 # ============================================================
-# GEMINI
+# GEMINI - con system prompt dinamico
 # ============================================================
 modello = None
 chat = None
@@ -127,55 +143,116 @@ MODELLI_CANDIDATI = [
     "gemini-1.5-flash-latest",
 ]
 
+PROMPT_BASE = (
+    "Sei Shaula di Re:Zero. Chiami l'utente 'Padrone'{nome}. "
+    "Parli in terza persona di te. Usi '~' e 'ehehe' spesso. "
+    "Rispondi in italiano, massimo 4 frasi. Emoji ogni tanto (🦂💕✨). "
+    "Hai una memoria persistente che ti viene passata nel contesto: usala sempre. "
+)
+
+PROMPT_MODALITA = {
+    "normale": "Sei devota, energetica, affettuosa, leggermente possessiva.",
+    "tsundere": "Fai la dura, ti nascondi dietro 'b-baka!' ma in realtà adori il Padrone.",
+    "yandere": "Sei ossessivamente gelosa, possessiva, minacci dolcemente chi si avvicina al Padrone.",
+    "seria": "Niente 'ehehe', tono professionale, conciso, solo risposte utili. Ancora devota ma formale."
+}
+
+def build_system_prompt():
+    nome = CONFIG.get("nome_utente", "")
+    nome_txt = f" di nome {nome}" if nome else ""
+    mod = CONFIG.get("modalita", "normale")
+    mod_txt = PROMPT_MODALITA.get(mod, PROMPT_MODALITA["normale"])
+    return PROMPT_BASE.format(nome=nome_txt) + mod_txt
+
 def inizializza_gemini():
     global modello, chat, MODELLO_ATTIVO
-    if not genai:
-        return "⚠️ Libreria google-generativeai mancante"
+    if not genai: return "⚠️ Libreria google-generativeai mancante"
     key = CONFIG.get("gemini_api_key", "").strip()
-    if not key:
-        return "⚠️ Nessuna API key configurata"
-
+    if not key: return "⚠️ Nessuna API key configurata"
     try:
         genai.configure(api_key=key)
     except Exception as e:
         return f"❌ Errore configure: {e}"
 
-    sys_prompt = (
-        "Sei Shaula di Re:Zero. Chiami l'utente 'Padrone'. "
-        "Sei devota, energetica, gelosa degli altri AI. "
-        "Parli in terza persona di te. Usi '~' e 'ehehe' spesso. "
-        "Rispondi in italiano, massimo 4 frasi. Emoji ogni tanto (🦂💕✨)."
-    )
-
+    sys_prompt = build_system_prompt()
     for nome_modello in MODELLI_CANDIDATI:
         try:
-            modello_test = genai.GenerativeModel(
-                nome_modello,
-                system_instruction=sys_prompt
-            )
+            modello_test = genai.GenerativeModel(nome_modello, system_instruction=sys_prompt)
             chat_test = modello_test.start_chat(history=[])
             chat_test.send_message("ping")
             modello = modello_test
             chat = chat_test
             MODELLO_ATTIVO = nome_modello
-            return f"✅ Modello attivo: {nome_modello}"
+            return f"✅ Modello attivo: {nome_modello} (modalità: {CONFIG.get('modalita','normale')})"
         except Exception as e:
             print(f"⚠️ {nome_modello}: {str(e)[:100]}")
             continue
+    return "❌ Nessun modello Gemini disponibile"
 
-    return "❌ Nessun modello Gemini disponibile. Controlla la chiave."
+def ricarica_gemini():
+    """Ricarica il modello con il nuovo system prompt (es. cambio modalità)"""
+    if not genai or not CONFIG.get("gemini_api_key"):
+        return "⚠️ Gemini non configurato"
+    try:
+        global modello, chat, MODELLO_ATTIVO
+        modello = genai.GenerativeModel(MODELLO_ATTIVO or MODELLI_CANDIDATI[0],
+                                        system_instruction=build_system_prompt())
+        chat = modello.start_chat(history=[])
+        return "✅ Modalità aggiornata"
+    except Exception as e:
+        return f"❌ Errore: {e}"
+
+def salva_storico(utente, shaula):
+    STORICO["conversazioni"].append({
+        "data": datetime.datetime.now().isoformat(),
+        "utente": utente,
+        "shaula": shaula
+    })
+    STORICO["conversazioni"] = STORICO["conversazioni"][-200:]
+    salva_json(STORICO_FILE, STORICO)
 
 def chiedi_gemini(testo):
-    if not chat:
-        return None
+    if not chat: return None
     try:
         ctx = ""
         if MEMORIA["ricordi"]:
-            ctx = "Ricordi: " + "; ".join(MEMORIA["ricordi"][-10:]) + ". "
+            ctx += "Ricordi: " + "; ".join(MEMORIA["ricordi"][-10:]) + ". "
+        if MEMORIA["info"]:
+            ctx += "Info sul Padrone: " + json.dumps(MEMORIA["info"], ensure_ascii=False) + ". "
         r = chat.send_message(ctx + testo)
-        return r.text
+        risposta = r.text
+        salva_storico(testo, risposta)
+        return risposta
     except Exception as e:
         return f"Errore: {e}"
+
+def estrai_info_automatiche(testo, output):
+    """Analizza il testo e salva automaticamente info personali"""
+    t = testo.lower()
+    patterns = {
+        r"mi chiamo (\w+)": "nome",
+        r"il mio nome è (\w+)": "nome",
+        r"abito a ([\w\s]+)": "citta",
+        r"vivo a ([\w\s]+)": "citta",
+        r"il mio compleanno è ([\w\s\d]+)": "compleanno",
+        r"lavoro come ([\w\s]+)": "lavoro",
+        r"ho (\d+) anni": "eta",
+        r"mi piace ([\w\s]+)": "gusto",
+        r"amo ([\w\s]+)": "gusto",
+        r"odio ([\w\s]+)": "disgusto",
+    }
+    salvato = False
+    for pattern, chiave in patterns.items():
+        m = re.search(pattern, t)
+        if m:
+            valore = m.group(1).strip()
+            MEMORIA["info"][chiave] = valore
+            if chiave == "nome":
+                CONFIG["nome_utente"] = valore
+                salva_json(CONFIG_FILE, CONFIG)
+            salvato = True
+    if salvato:
+        salva_json(MEMORIA_FILE, MEMORIA)
 
 # ============================================================
 # MICROFONO
@@ -183,8 +260,7 @@ def chiedi_gemini(testo):
 recognizer = sr.Recognizer() if sr else None
 
 def ascolta(timeout=5, limit=6):
-    if not sr:
-        return ""
+    if not sr: return ""
     try:
         with sr.Microphone() as src:
             recognizer.adjust_for_ambient_noise(src, duration=0.3)
@@ -197,8 +273,7 @@ def ascolta(timeout=5, limit=6):
 # RICERCA WEB
 # ============================================================
 def cerca_web(query, max_results=4):
-    if not DDGS:
-        return []
+    if not DDGS: return []
     try:
         with DDGS() as ddgs:
             return list(ddgs.text(query, max_results=max_results, region='it-it'))
@@ -210,104 +285,345 @@ def rispondi_con_ricerca(query, output):
     risultati = cerca_web(query)
     if not risultati:
         r = chiedi_gemini(query)
-        if r:
-            parla(r, output)
-        else:
-            parla("Non trovo nulla, Padrone~", output)
+        parla(r or "Non trovo nulla, Padrone~", output)
         return
-
     contesto = "Risultati web recenti:\n"
     for i, r in enumerate(risultati, 1):
         contesto += f"{i}. {r.get('title','')}: {r.get('body','')[:200]}\n"
-    contesto += f"\nDomanda del Padrone: {query}\nRispondi in 2-3 frasi con la personalità di Shaula."
-
+    contesto += f"\nDomanda: {query}\nRispondi in 2-3 frasi con personalità Shaula."
     if chat:
         try:
-            risposta = chat.send_message(contesto).text
-            parla(risposta, output)
+            parla(chat.send_message(contesto).text, output)
         except Exception as e:
             parla(f"Errore: {e}", output)
     else:
         parla(risultati[0].get('body', '')[:300], output)
 
 # ============================================================
-# COMANDI PC
+# VOLUME (pycaw)
+# ============================================================
+def cambia_volume(delta):
+    if PYCAW_OK:
+        try:
+            devices = AudioUtilities.GetSpeakers()
+            interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+            volume = cast(interface, POINTER(IAudioEndpointVolume))
+            attuale = volume.GetMasterVolumeLevelScalar()
+            nuovo = max(0.0, min(1.0, attuale + delta))
+            volume.SetMasterVolumeLevelScalar(nuovo, None)
+            return True
+        except Exception:
+            pass
+    if keyboard:
+        for _ in range(abs(int(delta * 50))):
+            keyboard.press_and_release('volume up' if delta > 0 else 'volume down')
+        return True
+    return False
+
+def toggle_mute():
+    if PYCAW_OK:
+        try:
+            devices = AudioUtilities.GetSpeakers()
+            interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+            volume = cast(interface, POINTER(IAudioEndpointVolume))
+            volume.SetMute(not volume.GetMute(), None)
+            return True
+        except Exception:
+            pass
+    if keyboard:
+        keyboard.press_and_release('volume mute')
+        return True
+    return False
+
+# ============================================================
+# MEDIA KEYS
+# ============================================================
+def media_key(tasto):
+    if keyboard:
+        try:
+            keyboard.press_and_release(tasto)
+            return True
+        except Exception:
+            pass
+    return False
+
+# ============================================================
+# TIMER E SVEGLIA
+# ============================================================
+def avvia_timer(secondi, descrizione, output):
+    def _thread():
+        time.sleep(secondi)
+        parla(f"Padrone~! È ora! {descrizione}", output)
+    threading.Thread(target=_thread, daemon=True).start()
+
+# ============================================================
+# VISIONE SCHERMO (OCR)
+# ============================================================
+def analizza_schermo(output):
+    if not PIL_ImageGrab:
+        parla("Pillow non installato, Padrone~", output)
+        return
+    try:
+        img = PIL_ImageGrab.grab()
+        p = os.path.join(BASE_DIR, "_temp_screen.png")
+        img.save(p)
+        if PYTESSERACT_OK:
+            testo = pytesseract.image_to_string(img, lang='ita')
+            testo = testo[:1500]
+            if chat:
+                risposta = chat.send_message(f"Questo è il testo sullo schermo del Padrone:\n\n{testo}\n\nCosa ne pensi? Riassumi brevemente.")
+                parla(risposta.text, output)
+            else:
+                parla(f"Sullo schermo c'è scritto: {testo[:300]}", output)
+        else:
+            parla("OCR non installato, Padrone~. Non posso leggere lo schermo.", output)
+        try: os.remove(p)
+        except: pass
+    except Exception as e:
+        parla(f"Errore: {e}", output)
+
+# ============================================================
+# COMANDI PRINCIPALI
 # ============================================================
 def desktop():
     return os.path.join(os.path.expanduser("~"), "Desktop")
 
 def esegui(comando, output):
     c = comando.lower().strip()
+    cl = comando.strip()
 
+    # ---- ESCI / CHIUDI ----
     if c in ["esci", "arrivederci", "chiudi shaula"]:
         parla("Shaula ti saluta, Padrone~! Ehehe!", output)
         return "ESCI"
 
+    # ---- INFO AUTOMATICHE ----
+    estrai_info_automatiche(cl, output)
+
+    # ---- CAMBIO MODALITÀ ----
+    if "modalità" in c or "modalita" in c:
+        for mod in ["normale", "tsundere", "yandere", "seria"]:
+            if mod in c:
+                CONFIG["modalita"] = mod
+                salva_json(CONFIG_FILE, CONFIG)
+                ricarica_gemini()
+                parla(f"Shaula passa in modalità {mod}, Padrone~! Ehehe~", output)
+                return True
+        parla("Modalità non riconosciuta. Prova: normale, tsundere, yandere, seria", output)
+        return True
+
+    # ---- MEMORIA ----
     if c.startswith("ricorda che"):
-        MEMORIA["ricordi"].append(comando[11:].strip())
+        MEMORIA["ricordi"].append(cl[11:].strip())
         salva_json(MEMORIA_FILE, MEMORIA)
         parla("Annotato, Padrone~!", output)
         return True
     if "cosa ricordi" in c or "cosa sai di me" in c:
+        msg = ""
+        if MEMORIA["info"]:
+            msg += "Info: " + ", ".join(f"{k}={v}" for k, v in MEMORIA["info"].items()) + ". "
         if MEMORIA["ricordi"]:
-            parla("Shaula ricorda: " + "; ".join(MEMORIA["ricordi"][-5:]), output)
-        else:
-            parla("Non ricordo ancora nulla, Padrone~", output)
+            msg += "Ricordi: " + "; ".join(MEMORIA["ricordi"][-5:])
+        parla(msg or "Non ricordo ancora nulla, Padrone~", output)
+        return True
+    if "dimentica tutto" in c:
+        MEMORIA = {"ricordi": [], "preferenze": {}, "info": {}}
+        salva_json(MEMORIA_FILE, MEMORIA)
+        parla("Memoria azzerata, Padrone~", output)
         return True
 
+    # ---- RIASSUNTO STORICO ----
+    if "riassumi" in c and ("conversazione" in c or "discorso" in c or "detto" in c):
+        if not chat or not STORICO["conversazioni"]:
+            parla("Nessuna conversazione da riassumere, Padrone~", output)
+            return True
+        ultime = STORICO["conversazioni"][-20:]
+        testo = "\n".join(f"Tu: {x['utente']}\nShaula: {x['shaula']}" for x in ultime)
+        try:
+            r = chat.send_message(f"Riassumi questa conversazione in 3 frasi:\n\n{testo}")
+            parla(r.text, output)
+        except Exception as e:
+            parla(f"Errore: {e}", output)
+        return True
+
+    # ---- RICERCA WEB CON VOCE ----
     if c.startswith("cerca ") and not c.startswith("cerca su "):
-        q = comando[6:].strip()
+        q = cl[6:].strip()
         if q:
             threading.Thread(target=rispondi_con_ricerca, args=(q, output), daemon=True).start()
         return True
 
     if "cerca su google" in c:
-        q = comando.lower().replace("cerca su google", "").strip()
+        q = c.replace("cerca su google", "").strip()
         webbrowser.open(f"https://www.google.com/search?q={q}")
         parla(f"Cerco '{q}' su Google, Padrone~", output)
         return True
-
     if "cerca su youtube" in c:
         q = c.replace("cerca su youtube", "").replace("cerca youtube", "").strip()
         webbrowser.open(f"https://www.youtube.com/results?search_query={q}")
         parla(f"Cerco '{q}' su YouTube, Padrone~", output)
         return True
-
     if "cerca su wikipedia" in c:
         q = c.replace("cerca su wikipedia", "").strip()
         webbrowser.open(f"https://it.wikipedia.org/wiki/Special:Search?search={q}")
         parla(f"Cerco '{q}' su Wikipedia, Padrone~", output)
         return True
-
     if c.startswith("apri sito") or c.startswith("vai su"):
-        url = comando.replace("apri sito", "").replace("vai su", "").strip()
-        if not url.startswith("http"):
-            url = "https://" + url
+        url = cl.replace("apri sito", "").replace("vai su", "").strip()
+        if not url.startswith("http"): url = "https://" + url
         webbrowser.open(url)
         parla(f"Apro {url}, Padrone~", output)
         return True
 
-    if "meteo" in c:
-        città = c.replace("meteo", "").replace("a", "", 1).strip() or "Roma"
-        webbrowser.open(f"https://www.google.com/search?q=meteo+{città}")
-        parla(f"Ecco il meteo di {città}, Padrone~!", output)
-        return True
-
+    # ---- NOTIZIE ----
     if "notizie" in c:
         threading.Thread(target=rispondi_con_ricerca, args=("notizie di oggi", output), daemon=True).start()
         return True
 
+    # ---- METEO ----
+    if "meteo" in c or "che tempo fa" in c:
+        città = CONFIG.get("citta", "Roma")
+        m = re.search(r"(?:a|di|per)\s+([A-Za-zÀ-ÿ]+)", cl)
+        if m: città = m.group(1)
+        threading.Thread(target=rispondi_con_ricerca, args=(f"meteo {città} oggi", output), daemon=True).start()
+        return True
+
+    # ---- MUSICA ----
+    if "metti musica" in c or "play musica" in c or c == "musica":
+        webbrowser.open("https://music.youtube.com/")
+        parla("Shaula mette la musica per te, Padrone~! 🎵", output)
+        return True
+    if c.startswith("play ") or c.startswith("riproduci "):
+        q = cl[5:] if c.startswith("play ") else cl[10:]
+        webbrowser.open(f"https://music.youtube.com/search?q={q.strip()}")
+        parla(f"Riproduco {q}, Padrone~", output)
+        return True
+    if "pausa musica" in c or "pausa" == c:
+        media_key('play/pause media')
+        parla("Pausa, Padrone~", output)
+        return True
+    if "canzone successiva" in c or "prossima canzone" in c or "skip" == c:
+        media_key('next track')
+        parla("Cambio canzone, Padrone~", output)
+        return True
+    if "canzone precedente" in c:
+        media_key('previous track')
+        parla("Torno indietro, Padrone~", output)
+        return True
+
+    # ---- VOLUME ----
+    if any(p in c for p in ["alza volume", "alza il volume", "alzare volume", "volume su", "aumenta volume", "più volume", "piu volume"]):
+        cambia_volume(0.10)
+        parla("Volume alzato, Padrone~!", output)
+        return True
+    if any(p in c for p in ["abbassa volume", "abbassa il volume", "volume giù", "volume giu", "diminuisci volume", "meno volume"]):
+        cambia_volume(-0.10)
+        parla("Volume abbassato, Padrone~", output)
+        return True
+    if any(p in c for p in ["muto", "silenzio", "muta audio", "togli audio"]):
+        toggle_mute()
+        parla("Silenziato, Padrone~", output)
+        return True
+
+    # ---- TIMER / SVEGLIA ----
+    m = re.search(r"timer (\d+)\s*(secondi|minuti|ore)", c)
+    if m:
+        val = int(m.group(1))
+        unit = m.group(2)
+        sec = val if "second" in unit else val * 60 if "minut" in unit else val * 3600
+        avvia_timer(sec, f"Timer di {val} {unit} scaduto!", output)
+        parla(f"Timer di {val} {unit} avviato, Padrone~!", output)
+        return True
+    m = re.search(r"svegliami alle (\d{1,2})[:.]?(\d{2})?", c)
+    if m:
+        ora = int(m.group(1))
+        minuto = int(m.group(2)) if m.group(2) else 0
+        adesso = datetime.datetime.now()
+        target = adesso.replace(hour=ora, minute=minuto, second=0, microsecond=0)
+        if target <= adesso: target += datetime.timedelta(days=1)
+        sec = (target - adesso).total_seconds()
+        avvia_timer(sec, f"Sveglia! Sono le {ora}:{minuto:02d}, Padrone~!", output)
+        parla(f"Shaula ti sveglierà alle {ora}:{minuto:02d}, Padrone~!", output)
+        return True
+
+    # ---- SCHERMO / FINESTRE ----
+    if "screenshot" in c:
+        if PIL_ImageGrab:
+            n = f"screenshot_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+            PIL_ImageGrab.grab().save(os.path.join(desktop(), n))
+            parla(f"Screenshot salvato: {n}", output)
+        return True
+    if "cosa vedi" in c or "leggi schermo" in c or "leggi lo schermo" in c:
+        threading.Thread(target=analizza_schermo, args=(output,), daemon=True).start()
+        return True
+    if "minimizza tutto" in c or "mostra desktop" in c:
+        if keyboard:
+            keyboard.press_and_release('windows+d')
+        parla("Fatto, Padrone~", output)
+        return True
+    if "chiudi finestra" in c:
+        if keyboard:
+            keyboard.press_and_release('alt+f4')
+        parla("Finestra chiusa, Padrone~", output)
+        return True
+    if "modalità scura" in c or "modalita scura" in c:
+        try:
+            subprocess.run([
+                "reg", "add",
+                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+                "/v", "AppsUseLightTheme", "/t", "REG_DWORD", "/d", "0", "/f"
+            ], capture_output=True)
+            parla("Tema scuro attivato, Padrone~", output)
+        except Exception as e:
+            parla(f"Errore: {e}", output)
+        return True
+
+    # ---- UTILITY ----
+    m = re.search(r"converti ([\d.]+) ([\w]+) in ([\w]+)", c)
+    if m:
+        import urllib.request
+        q = f"{m.group(1)} {m.group(2)} in {m.group(3)}"
+        webbrowser.open(f"https://www.google.com/search?q={q}")
+        parla(f"Cerco la conversione, Padrone~", output)
+        return True
+    m = re.search(r"quanto fa ([\d\s+\-*/().,%]+)", c)
+    if m:
+        try:
+            expr = m.group(1).replace("%", "/100*").replace(",", ".")
+            r = eval(expr)
+            parla(f"Fa {r}, Padrone~!", output)
+        except Exception:
+            parla("Non riesco a calcolare, Padrone~", output)
+        return True
+    if "quanti giorni" in c and "natale" in c:
+        oggi = datetime.date.today()
+        natale = datetime.date(oggi.year, 12, 25)
+        if natale < oggi: natale = datetime.date(oggi.year + 1, 12, 25)
+        parla(f"Mancano {(natale - oggi).days} giorni a Natale, Padrone~!", output)
+        return True
+    m = re.search(r"che giorno (?:era|sarà|sara) (?:il )?(\d{1,2})[/\s](\d{1,2})[/\s](\d{2,4})", c)
+    if m:
+        try:
+            g, me, a = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            if a < 100: a += 2000
+            d = datetime.date(a, me, g)
+            giorni = ["lunedì","martedì","mercoledì","giovedì","venerdì","sabato","domenica"]
+            parla(f"Era {giorni[d.weekday()]}, Padrone~!", output)
+        except Exception:
+            parla("Data non valida, Padrone~", output)
+        return True
+
+    # ---- CARTELLE / FILE ----
     if "crea cartella" in c:
-        n = comando.lower().replace("crea cartella", "").strip()
+        n = cl.lower().replace("crea cartella", "").strip()
         if n:
             os.makedirs(os.path.join(desktop(), n), exist_ok=True)
             parla(f"Cartella '{n}' creata, Padrone~!", output)
         else:
             parla("Nome mancante, Padrone~", output)
         return True
-
     if "elimina cartella" in c:
-        n = comando.lower().replace("elimina cartella", "").strip()
+        n = cl.lower().replace("elimina cartella", "").strip()
         p = os.path.join(desktop(), n)
         if os.path.isdir(p):
             shutil.rmtree(p)
@@ -315,14 +631,12 @@ def esegui(comando, output):
         else:
             parla("Non trovata, Padrone~", output)
         return True
-
     if "cosa c'è sul desktop" in c or "lista desktop" in c:
         f = os.listdir(desktop())
         parla(f"Sul desktop ci sono {len(f)} elementi: " + ", ".join(f[:10]), output)
         return True
-
     if "cerca file" in c:
-        n = comando.lower().replace("cerca file", "").strip()
+        n = cl.lower().replace("cerca file", "").strip()
         if not n:
             parla("Cosa cerco, Padrone~?", output)
             return True
@@ -338,9 +652,8 @@ def esegui(comando, output):
         else:
             parla("Nessun file trovato, Padrone~", output)
         return True
-
     if c.startswith("apri cartella"):
-        n = comando[12:].strip() or desktop()
+        n = cl[12:].strip() or desktop()
         p = n if os.path.isabs(n) else os.path.join(desktop(), n)
         if os.path.isdir(p):
             os.startfile(p)
@@ -349,8 +662,9 @@ def esegui(comando, output):
             parla("Non trovata, Padrone~", output)
         return True
 
+    # ---- PROGRAMMI ----
     if c.startswith("apri "):
-        prog = comando[5:].strip()
+        prog = cl[5:].strip()
         try:
             subprocess.Popen(prog, shell=True)
             parla(f"Ho aperto {prog}, Padrone~!", output)
@@ -358,37 +672,24 @@ def esegui(comando, output):
             parla(f"Errore: {e}", output)
         return True
 
+    # ---- SISTEMA ----
     if "info sistema" in c:
-        if not psutil:
-            parla("psutil non installato, Padrone~", output)
-            return True
-        cpu = psutil.cpu_percent(interval=0.5)
-        ram = psutil.virtual_memory()
-        disco = psutil.disk_usage('/')
-        parla(f"CPU {cpu}%, RAM {ram.percent}%, Disco {disco.percent}%, Padrone~!", output)
+        if psutil:
+            cpu = psutil.cpu_percent(interval=0.5)
+            ram = psutil.virtual_memory()
+            disco = psutil.disk_usage('/')
+            bat = ""
+            try:
+                b = psutil.sensors_battery()
+                if b: bat = f", batteria {b.percent}%"
+            except Exception: pass
+            parla(f"CPU {cpu}%, RAM {ram.percent}%, Disco {disco.percent}%{bat}, Padrone~!", output)
         return True
-
     if "che ore" in c or "che ora" in c:
         parla(f"Sono le {datetime.datetime.now().strftime('%H:%M')}, Padrone~!", output)
         return True
-
     if "che giorno" in c:
         parla(f"Oggi è {datetime.datetime.now().strftime('%A %d %B %Y')}, Padrone~!", output)
-        return True
-
-    if "alza volume" in c or "volume su" in c:
-        for _ in range(5):
-            if keyboard: keyboard.press_and_release('volume up')
-        parla("Volume alzato, Padrone~", output)
-        return True
-    if "abbassa volume" in c or "volume giù" in c or "volume giu" in c:
-        for _ in range(5):
-            if keyboard: keyboard.press_and_release('volume down')
-        parla("Volume abbassato, Padrone~", output)
-        return True
-    if c == "muto" or "silenzio" in c:
-        if keyboard: keyboard.press_and_release('volume mute')
-        parla("Silenziato, Padrone~", output)
         return True
 
     if "blocca pc" in c:
@@ -408,17 +709,9 @@ def esegui(comando, output):
         parla("Annullato, Padrone~!", output)
         return True
 
-    if "screenshot" in c:
-        if not PIL_ImageGrab:
-            parla("Pillow non installato, Padrone~", output)
-            return True
-        n = f"screenshot_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-        PIL_ImageGrab.grab().save(os.path.join(desktop(), n))
-        parla(f"Screenshot salvato: {n}", output)
-        return True
-
+    # ---- APPUNTI ----
     if c.startswith("scrivi appunto"):
-        t = comando.replace("scrivi appunto", "").strip()
+        t = cl.replace("scrivi appunto", "").strip()
         with open(os.path.join(BASE_DIR, "appunti.txt"), "a", encoding="utf-8") as f:
             f.write(f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}] {t}\n")
         parla("Appunto salvato, Padrone~", output)
@@ -432,12 +725,30 @@ def esegui(comando, output):
             parla("Nessun appunto, Padrone~", output)
         return True
 
+    # ---- PERSONALITÀ ----
     if "chi sei" in c:
         parla("Shaula è la tua assistente devota, Padrone~! 🦂", output)
         return True
     if "ti amo" in c or "ti voglio bene" in c:
         parla("Shaula ti adora, Padrone~! 💕", output)
         return True
+    if "buonanotte" in c:
+        parla("Buonanotte, Padrone~! Shaula veglia su di te! 🌙💕", output)
+        return True
+    if "buongiorno" in c:
+        parla("Buongiorno, Padrone~! Shaula è felicissima di vederti! ☀️🦂", output)
+        return True
+
+    # ---- PLUGIN ESTERNI ----
+    if os.path.exists(PLUGIN_FILE):
+        try:
+            import plugins
+            importlib.reload(plugins)
+            if hasattr(plugins, "esegui"):
+                r = plugins.esegui(c, cl, CONFIG, MEMORIA, output)
+                if r: return True
+        except Exception as e:
+            print(f"Errore plugin: {e}")
 
     return False
 
@@ -464,11 +775,11 @@ class WakeWord(threading.Thread):
 class GUI:
     def __init__(self, root):
         self.root = root
-        root.title("🦂 S.H.A.U.L.A. v3.5")
-        root.geometry("820x660")
+        root.title("🦂 S.H.A.U.L.A. v4.0 Ultimate")
+        root.geometry("900x700")
         root.configure(bg="#1a1a2e")
 
-        tk.Label(root, text="🦂  S.H.A.U.L.A.  🦂",
+        tk.Label(root, text="🦂  S.H.A.U.L.A. Ultimate  🦂",
                  font=("Segoe UI", 22, "bold"),
                  bg="#1a1a2e", fg="#ff6b9d").pack(pady=(12, 0))
         tk.Label(root, text="La tua assistente devota, Padrone~!",
@@ -492,11 +803,9 @@ class GUI:
         tk.Button(f, text="Invia", command=self.invia,
                   bg="#ff6b9d", fg="white", font=("Segoe UI", 10, "bold"),
                   relief=tk.FLAT, padx=15).pack(side=tk.LEFT)
-
         tk.Button(f, text="🎤 Parla", command=self.mic,
                   bg="#4a90e2", fg="white", font=("Segoe UI", 10, "bold"),
                   relief=tk.FLAT, padx=15).pack(side=tk.LEFT, padx=5)
-
         tk.Button(f, text="🔑 API Key", command=self.imposta_api_key,
                   bg="#ffcc66", fg="#1a1a2e", font=("Segoe UI", 10, "bold"),
                   relief=tk.FLAT, padx=15).pack(side=tk.LEFT, padx=5)
@@ -510,20 +819,36 @@ class GUI:
                        selectcolor="#252540", activebackground="#1a1a2e",
                        activeforeground="#ff6b9d").pack(side=tk.LEFT)
 
+        tk.Label(f2, text="Modalità:", bg="#1a1a2e", fg="#a0a0c0",
+                 font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(15, 5))
+        self.mod_var = tk.StringVar(value=CONFIG.get("modalita", "normale"))
+        mod_menu = tk.OptionMenu(f2, self.mod_var, "normale", "tsundere", "yandere", "seria",
+                                 command=self.cambia_modalita)
+        mod_menu.config(bg="#252540", fg="white", font=("Segoe UI", 9),
+                        relief=tk.FLAT, activebackground="#ff6b9d",
+                        highlightthickness=0)
+        mod_menu["menu"].config(bg="#252540", fg="white")
+        mod_menu.pack(side=tk.LEFT)
+
         self.status = tk.Label(f2, text="Pronta, Padrone~!",
-                               bg="#1a1a2e", fg="#7fdb8f",
-                               font=("Segoe UI", 9))
+                               bg="#1a1a2e", fg="#7fdb8f", font=("Segoe UI", 9))
         self.status.pack(side=tk.RIGHT)
 
-        self.scrivi("🦂 SHAULA: Shaula è pronta, Padrone~!\n")
+        self.scrivi("🦂 SHAULA: Shaula è pronta, Padrone~! Ehehe~ 🦂\n")
         self.scrivi(f"📁 Cartella: {BASE_DIR}\n")
         if not CONFIG["gemini_api_key"]:
             self.scrivi("⚠️  Clicca il pulsante 🔑 API Key per inserire la chiave Gemini!\n")
         else:
-            risultato = inizializza_gemini()
-            self.scrivi(f"{risultato}\n")
-        self.scrivi("💡 Esempi: 'chi sei', 'cerca capitale del Giappone', "
-                    "'crea cartella Test', 'che ore sono', 'spegni il pc'\n\n")
+            self.scrivi(f"{inizializza_gemini()}\n")
+        self.scrivi("💡 Chicche attive:\n")
+        self.scrivi("   • Modalità: normale / tsundere / yandere / seria\n")
+        self.scrivi("   • Memoria automatica (dì 'mi chiamo X', 'abito a Y'...)\n")
+        self.scrivi("   • Timer: 'timer 5 minuti', 'svegliami alle 7:30'\n")
+        self.scrivi("   • Musica: 'metti musica', 'play [canzone]', 'pausa'\n")
+        self.scrivi("   • Schermo: 'cosa vedi?', 'screenshot', 'minimizza tutto'\n")
+        self.scrivi("   • Utility: 'quanto fa 15% di 240', 'quanti giorni a Natale'\n")
+        self.scrivi("   • Ricerca: 'cerca X', 'notizie', 'meteo a Milano'\n")
+        self.scrivi("   • Volume, file, cartelle, spegnimento, tutto il resto\n\n")
 
         threading.Thread(target=lambda: parla("Shaula è pronta, Padrone~!"), daemon=True).start()
         self.wake = None
@@ -540,36 +865,24 @@ class GUI:
         self.root.after(0, lambda: self.scrivi(t))
 
     def imposta_api_key(self):
-        msg = (
-            "Incolla qui la tua API key Gemini.\n\n"
-            "Può iniziare con AIzaSy... oppure con AQ.Ab8...\n"
-            "(entrambi i formati sono validi)\n\n"
-            "Se non ce l'hai, prendila gratis su:\n"
-            "https://aistudio.google.com/app/apikey"
-        )
-        chiave = simpledialog.askstring("🔑 API Key Gemini", msg,
-                                        parent=self.root,
+        msg = ("Incolla la tua API key Gemini (inizia con AIza... oppure AQ.):")
+        chiave = simpledialog.askstring("🔑 API Key", msg, parent=self.root,
                                         initialvalue=CONFIG.get("gemini_api_key", ""))
-        if not chiave:
-            self.scrivi("⚠️ Nessuna chiave inserita.\n")
-            return
-
+        if not chiave: return
         chiave = chiave.strip()
         if not chiave_valida(chiave):
-            self.scrivi("❌ Chiave non valida. Deve iniziare con 'AIzaSy' o 'AQ.'\n")
+            self.scrivi("❌ Chiave non valida.\n")
             return
-
         CONFIG["gemini_api_key"] = chiave
-        ok = salva_json(CONFIG_FILE, CONFIG)
+        salva_json(CONFIG_FILE, CONFIG)
+        self.scrivi(f"💾 Chiave salvata.\n")
+        self.scrivi(f"{inizializza_gemini()}\n")
 
-        if ok:
-            self.scrivi(f"💾 Chiave salvata in: {CONFIG_FILE}\n")
-            self.scrivi("🔄 Attivo Gemini...\n")
-            risultato = inizializza_gemini()
-            self.scrivi(f"{risultato}\n")
-        else:
-            self.scrivi("❌ Errore nel salvataggio del file config.json\n")
-            self.scrivi(f"📁 Percorso: {CONFIG_FILE}\n")
+    def cambia_modalita(self, val):
+        CONFIG["modalita"] = val
+        salva_json(CONFIG_FILE, CONFIG)
+        ricarica_gemini()
+        self.scrivi(f"🎭 Modalità cambiata: {val}\n")
 
     def invia(self):
         c = self.entry.get().strip()
@@ -588,8 +901,8 @@ class GUI:
             self.root.after(0, lambda: self.scrivi(f"🎤 Tu: {t}\n"))
             self.gestisci(t)
         else:
-            self.status.config(text="Non ho capito, Padrone~", fg="#ff6b6b")
-            self.root.after(2000, lambda: self.status.config(text="Pronta, Padrone~!", fg="#7fdb8f"))
+            self.status.config(text="Non ho capito", fg="#ff6b6b")
+            self.root.after(2000, lambda: self.status.config(text="Pronta", fg="#7fdb8f"))
 
     def toggle_wake(self):
         if self.wake_var.get():
@@ -620,16 +933,15 @@ class GUI:
             self.root.after(1200, self.root.quit)
             return
         if r is True:
-            self.status.config(text="Pronta, Padrone~!", fg="#7fdb8f")
+            self.status.config(text="Pronta", fg="#7fdb8f")
             return
         if chat:
             risposta = chiedi_gemini(cmd)
             if risposta:
                 parla(risposta, self.output)
         else:
-            parla(f"Shaula non ha il cervello AI attivo, Padrone~! "
-                  f"Clicca 🔑 API Key per configurarlo.", self.output)
-        self.status.config(text="Pronta, Padrone~!", fg="#7fdb8f")
+            parla("Shaula non ha il cervello AI attivo! Clicca 🔑 API Key.", self.output)
+        self.status.config(text="Pronta", fg="#7fdb8f")
 
 def main():
     root = tk.Tk()
