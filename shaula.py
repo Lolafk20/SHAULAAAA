@@ -1,11 +1,12 @@
 # ============================================================
-# S.H.A.U.L.A. v3.0 - Advanced con ricerca web
+# S.H.A.U.L.A. v3.1 - Advanced
+# La API key va SOLO in config.json (mai in questo file)
 # ============================================================
 import os, sys, json, time, shutil, datetime, subprocess
 import threading, webbrowser, ctypes
 
 import tkinter as tk
-from tkinter import scrolledtext
+from tkinter import scrolledtext, simpledialog
 
 def try_import(name):
     try:
@@ -59,7 +60,7 @@ def salva_json(p, d):
         pass
 
 CONFIG = carica_json(CONFIG_FILE, {
-    "gemini_api_key": "AQ.Ab8RN6Ik7G1iPekxTRdhjFEQq4pOybUaLzqdPCoUdXfPm5A-ww",
+    "gemini_api_key": "",
     "wake_word": "shaula",
     "voce_attiva": True,
     "voce_rate": 180,
@@ -104,9 +105,15 @@ def parla(testo, cb=None):
 modello = None
 chat = None
 
-if genai and CONFIG["gemini_api_key"]:
+def inizializza_gemini():
+    global modello, chat
+    if not genai:
+        return
+    key = CONFIG.get("gemini_api_key", "").strip()
+    if not key:
+        return
     try:
-        genai.configure(api_key=CONFIG["gemini_api_key"])
+        genai.configure(api_key=key)
         sys_prompt = (
             "Sei Shaula di Re:Zero. Chiami l'utente 'Padrone'. "
             "Sei devota, energetica, gelosa degli altri AI. "
@@ -118,8 +125,11 @@ if genai and CONFIG["gemini_api_key"]:
             system_instruction=sys_prompt
         )
         chat = modello.start_chat(history=[])
+        print("✅ Gemini inizializzato")
     except Exception as e:
         print(f"Errore Gemini: {e}")
+        modello = None
+        chat = None
 
 def chiedi_gemini(testo):
     if not chat:
@@ -132,6 +142,34 @@ def chiedi_gemini(testo):
         return r.text
     except Exception as e:
         return f"Errore: {e}"
+
+def chiedi_api_key_se_mancante():
+    """Se la API key non è configurata, la chiede e la salva in config.json."""
+    if CONFIG.get("gemini_api_key", "").strip():
+        inizializza_gemini()
+        return
+
+    root_tmp = tk.Tk()
+    root_tmp.withdraw()
+    root_tmp.attributes("-topmost", True)
+
+    msg = (
+        "Benvenuto, Padrone~! 🦂\n\n"
+        "Per far funzionare il cervello AI di S.H.A.U.L.A. serve una API key Gemini (gratis).\n\n"
+        "Prendila qui:\n"
+        "https://aistudio.google.com/app/apikey\n\n"
+        "Incolla la chiave qui sotto (formato AIzaSy...):"
+    )
+    chiave = simpledialog.askstring("🦂 S.H.A.U.L.A. - Configurazione", msg, parent=root_tmp)
+    root_tmp.destroy()
+
+    if chiave and chiave.strip().startswith("AIza"):
+        CONFIG["gemini_api_key"] = chiave.strip()
+        salva_json(CONFIG_FILE, CONFIG)
+        print("✅ API key salvata in config.json")
+        inizializza_gemini()
+    else:
+        print("⚠️ Nessuna chiave valida inserita. SHAULA funzionerà senza Gemini.")
 
 # ============================================================
 # MICROFONO
@@ -447,7 +485,7 @@ class WakeWord(threading.Thread):
 class GUI:
     def __init__(self, root):
         self.root = root
-        root.title("🦂 S.H.A.U.L.A. v3.0")
+        root.title("🦂 S.H.A.U.L.A. v3.1")
         root.geometry("800x640")
         root.configure(bg="#1a1a2e")
 
@@ -487,8 +525,8 @@ class GUI:
                        activeforeground="#ff6b9d").pack(side=tk.LEFT, padx=5)
 
         self.status = tk.Label(root, text="Pronta, Padrone~!",
-                               bg="#1a1a2e", fg="#7fdb8f").pack(pady=(0, 8))
-        self.status = root.winfo_children()[-1]
+                               bg="#1a1a2e", fg="#7fdb8f")
+        self.status.pack(pady=(0, 8))
 
         self.scrivi("🦂 SHAULA: Shaula è pronta, Padrone~!\n")
         if not CONFIG["gemini_api_key"]:
@@ -571,6 +609,7 @@ class GUI:
         self.status.config(text="Pronta, Padrone~!", fg="#7fdb8f")
 
 def main():
+    chiedi_api_key_se_mancante()
     root = tk.Tk()
     GUI(root)
     root.mainloop()
