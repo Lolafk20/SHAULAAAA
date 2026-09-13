@@ -1,5 +1,5 @@
 # ============================================================
-# S.H.A.U.L.A. v3.3 - Con pulsante API Key integrato
+# S.H.A.U.L.A. v3.4 - Accetta chiavi AIzaSy... e AQ.Ab8...
 # ============================================================
 import os, sys, json, time, shutil, datetime, subprocess
 import threading, webbrowser, ctypes
@@ -32,7 +32,7 @@ except ImportError:
     pass
 
 # ============================================================
-# PERCORSI - usa sempre la cartella dell'exe
+# PERCORSI
 # ============================================================
 if getattr(sys, 'frozen', False):
     BASE_DIR = os.path.dirname(sys.executable)
@@ -73,6 +73,13 @@ CONFIG = carica_json(CONFIG_FILE, {
     "wake_word_attivo": False
 })
 MEMORIA = carica_json(MEMORIA_FILE, {"ricordi": []})
+
+def chiave_valida(chiave):
+    """Accetta sia AIzaSy... che AQ.Ab8..."""
+    if not chiave:
+        return False
+    c = chiave.strip()
+    return c.startswith("AIza") or c.startswith("AQ.")
 
 # ============================================================
 # VOCE
@@ -154,7 +161,7 @@ def inizializza_gemini():
             print(f"⚠️ {nome_modello}: {str(e)[:100]}")
             continue
 
-    return "❌ Nessun modello Gemini disponibile"
+    return "❌ Nessun modello Gemini disponibile. Controlla la chiave."
 
 def chiedi_gemini(testo):
     if not chat:
@@ -455,7 +462,7 @@ class WakeWord(threading.Thread):
 class GUI:
     def __init__(self, root):
         self.root = root
-        root.title("🦂 S.H.A.U.L.A. v3.3")
+        root.title("🦂 S.H.A.U.L.A. v3.4")
         root.geometry("820x660")
         root.configure(bg="#1a1a2e")
 
@@ -472,7 +479,6 @@ class GUI:
             state=tk.DISABLED)
         self.chat.pack(fill=tk.BOTH, expand=True, padx=15, pady=10)
 
-        # Frame bottoni
         f = tk.Frame(root, bg="#1a1a2e")
         f.pack(fill=tk.X, padx=15, pady=(0, 8))
 
@@ -489,7 +495,6 @@ class GUI:
                   bg="#4a90e2", fg="white", font=("Segoe UI", 10, "bold"),
                   relief=tk.FLAT, padx=15).pack(side=tk.LEFT, padx=5)
 
-        # Pulsante API KEY - NOVITÀ
         tk.Button(f, text="🔑 API Key", command=self.imposta_api_key,
                   bg="#ffcc66", fg="#1a1a2e", font=("Segoe UI", 10, "bold"),
                   relief=tk.FLAT, padx=15).pack(side=tk.LEFT, padx=5)
@@ -508,7 +513,6 @@ class GUI:
                                font=("Segoe UI", 9))
         self.status.pack(side=tk.RIGHT)
 
-        # Benvenuto
         self.scrivi("🦂 SHAULA: Shaula è pronta, Padrone~!\n")
         self.scrivi(f"📁 Cartella: {BASE_DIR}\n")
         if not CONFIG["gemini_api_key"]:
@@ -534,9 +538,10 @@ class GUI:
         self.root.after(0, lambda: self.scrivi(t))
 
     def imposta_api_key(self):
-        """Apre finestra per inserire/modificare la API key e salva in config.json"""
         msg = (
-            "Incolla qui la tua API key Gemini (inizia con AIzaSy...)\n\n"
+            "Incolla qui la tua API key Gemini.\n\n"
+            "Può iniziare con AIzaSy... oppure con AQ.Ab8...\n"
+            "(entrambi i formati sono validi)\n\n"
             "Se non ce l'hai, prendila gratis su:\n"
             "https://aistudio.google.com/app/apikey"
         )
@@ -548,8 +553,8 @@ class GUI:
             return
 
         chiave = chiave.strip()
-        if not chiave.startswith("AIza"):
-            self.scrivi("❌ La chiave non sembra valida (deve iniziare con AIzaSy...).\n")
+        if not chiave_valida(chiave):
+            self.scrivi("❌ Chiave non valida. Deve iniziare con 'AIzaSy' o 'AQ.'\n")
             return
 
         CONFIG["gemini_api_key"] = chiave
