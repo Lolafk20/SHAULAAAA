@@ -1,10 +1,11 @@
 # ============================================================
-# S.H.A.U.L.A. v5.2 - WhatsApp con fallback automatico
+# S.H.A.U.L.A. v5.3 - WhatsApp con API Windows native
 # ============================================================
 import os, sys, json, time, shutil, datetime, subprocess
 import threading, webbrowser, ctypes, random, re, glob
 import importlib
 import smtplib
+from ctypes import wintypes
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
@@ -316,6 +317,8 @@ def chiedi_gemini(testo):
             return "⚠️ Gemini ha bloccato la risposta."
         if "DEADLINE" in err or "timeout" in err.lower():
             return "⚠️ Timeout, riprova."
+        if "404" in err and "no longer available" in err:
+            return "❌ Modello non più disponibile. Aggiorna config.json con 'gemini-flash-latest'."
         return f"Errore: {err[:200]}"
 
 def estrai_info_automatiche(testo, output):
@@ -385,76 +388,118 @@ def rispondi_con_ricerca(query, output):
     parla(risposta or risultati[0].get('body', '')[:300], output)
 
 # ============================================================
-# WHATSAPP AUTO-SEND (con fallback pyautogui -> keyboard)
+# WHATSAPP AUTO-SEND - v3 con API Windows native
 # ============================================================
-def _scrivi(testo, backend):
-    """Scrive del testo usando il backend scelto."""
+VK_CODES = {
+    'enter': 0x0D, 'tab': 0x09, 'esc': 0x1B, 'escape': 0x1B,
+    'space': 0x20, 'backspace': 0x08, 'delete': 0x2E,
+    'ctrl': 0x11, 'control': 0x11, 'shift': 0x10, 'alt': 0x12,
+    'win': 0x5B, 'windows': 0x5B,
+    'f': 0x46, 'a': 0x41, 'c': 0x43, 'v': 0x56, 'x': 0x58,
+    'd': 0x44, 's': 0x53, 'z': 0x5A, 'w': 0x57, 'q': 0x51,
+    'left': 0x25, 'up': 0x26, 'right': 0x27, 'down': 0x28,
+}
+KEYEVENTF_KEYUP = 0x0002
+
+def _win_key_down(vk_code):
+    ctypes.windll.user32.keybd_event(vk_code, 0, 0, 0)
+
+def _win_key_up(vk_code):
+    ctypes.windll.user32.keybd_event(vk_code, 0, KEYEVENTF_KEYUP, 0)
+
+def _win_press(vk_code):
+    _win_key_down(vk_code)
+    time.sleep(0.03)
+    _win_key_up(vk_code)
+
+def _win_combo(vk_codes):
+    for code in vk_codes:
+        _win_key_down(code)
+        time.sleep(0.02)
+    time.sleep(0.05)
+    for code in reversed(vk_codes):
+        _win_key_up(code)
+        time.sleep(0.02)
+
+def _win_copy_to_clipboard(testo):
+    try:
+        r = tk.Tk()
+        r.withdraw()
+        r.clipboard_clear()
+        r.clipboard_append(testo)
+        r.update()
+        r.destroy()
+        return True
+    except Exception as e:
+        print(f"Errore clipboard: {e}")
+        return False
+
+def _scrivi_universale(testo, backend):
     if backend == "pyautogui":
         pyautogui.write(testo, interval=0.03)
-    else:
+    elif backend == "keyboard":
         keyboard.write(testo, delay=0.02)
+    else:
+        _win_copy_to_clipboard(testo)
+        time.sleep(0.3)
+        _win_combo([VK_CODES['ctrl'], VK_CODES['v']])
 
-def _premi(tasto, backend):
+def _premi_universale(tasto, backend):
     if backend == "pyautogui":
         pyautogui.press(tasto)
-    else:
+    elif backend == "keyboard":
         keyboard.press_and_release(tasto)
+    else:
+        vk = VK_CODES.get(tasto.lower())
+        if vk:
+            _win_press(vk)
 
-def _scorciatoia(tasti, backend):
+def _combo_universale(tasti, backend):
     if backend == "pyautogui":
         pyautogui.hotkey(*tasti)
-    else:
+    elif backend == "keyboard":
         keyboard.press_and_release("+".join(tasti))
+    else:
+        codici = [VK_CODES.get(t.lower()) for t in tasti]
+        codici = [c for c in codici if c]
+        if codici:
+            _win_combo(codici)
 
 def invia_whatsapp_shaula(contatto, messaggio_utente, output):
-    """
-    Apre WhatsApp Desktop, cerca il contatto, scrive:
-    'Ciao! Io sono Shaula, il mio padrone vorrebbe dirti: [messaggio]'
-    e invia automaticamente.
-    Usa pyautogui se disponibile, altrimenti keyboard.
-    """
     firma = CONFIG.get("firma_shaula", "Ciao! Io sono Shaula, il mio padrone vorrebbe dirti:")
     messaggio_finale = f"{firma} {messaggio_utente}" if firma else messaggio_utente
 
-    # Scegli il backend
     if pyautogui:
         backend = "pyautogui"
     elif keyboard:
         backend = "keyboard"
     else:
-        parla("⚠️ Serve pyautogui o keyboard per WhatsApp, Padrone~", output)
-        return False
+        backend = "winapi"
 
     print(f"Backend WhatsApp: {backend}")
     parla(f"Shaula apre WhatsApp per {contatto}... 💕", output)
 
     try:
-        # 1. Apri WhatsApp Desktop
         try:
             os.startfile("whatsapp://")
         except Exception:
             webbrowser.open("https://web.whatsapp.com")
-        time.sleep(6)
+        time.sleep(7)
 
-        # 2. Cerca il contatto (Ctrl+F)
-        _scorciatoia(["ctrl", "f"], backend)
+        _combo_universale(["ctrl", "f"], backend)
         time.sleep(1.5)
-        _scrivi(contatto, backend)
+        _scrivi_universale(contatto, backend)
         time.sleep(2.5)
-        _premi("enter", backend)
+        _premi_universale("enter", backend)
         time.sleep(2)
 
-        # 3. Scrivi il messaggio
-        _scrivi(messaggio_finale, backend)
+        _scrivi_universale(messaggio_finale, backend)
         time.sleep(1)
-
-        # 4. Invia
-        _premi("enter", backend)
+        _premi_universale("enter", backend)
         time.sleep(0.5)
 
         parla(f"Messaggio inviato a {contatto}, Padrone~! 💕 Ehehe~", output)
         return True
-
     except Exception as e:
         parla(f"❌ Errore WhatsApp: {str(e)[:150]}", output)
         return False
@@ -694,12 +739,21 @@ def desktop():
     return os.path.join(os.path.expanduser("~"), "Desktop")
 
 def esegui(comando, output):
+    # Rimuove wake word dall'inizio
+    comando = re.sub(
+        rf"^\s*{re.escape(CONFIG.get('wake_word', 'shaula'))}\s*[,!?.]?\s*",
+        "", comando, flags=re.IGNORECASE
+    )
     c = comando.lower().strip()
     cl = comando.strip()
 
     if c in ["esci", "arrivederci", "chiudi shaula"]:
         parla("Shaula ti saluta, Padrone~! Ehehe!", output)
         return "ESCI"
+
+    if c == "":
+        parla("Dimmi, Padrone~!", output)
+        return True
 
     estrai_info_automatiche(cl, output)
 
@@ -735,11 +789,8 @@ def esegui(comando, output):
         parla("Memoria azzerata, Padrone~", output)
         return True
 
-    # ============================================================
-    # WHATSAPP AUTO-SEND - VERSIONE FLESSIBILE
-    # ============================================================
+    # ---- WHATSAPP AUTO-SEND ----
     verbi_wa = r"(?:dì|di|dici|manda|invia|scrivi|messaggio)"
-    # Regex 1: con "che" o ":" separatore
     m1 = re.search(
         rf"^{verbi_wa}\s+(?:un\s+)?(?:messaggio\s+)?(?:whatsapp\s+)?"
         rf"(?:a|ad|al|alla)\s+"
@@ -747,7 +798,6 @@ def esegui(comando, output):
         rf"(.+?)\s*(?:che|:)\s*(.+)$",
         cl, re.IGNORECASE
     )
-    # Regex 2: senza separatore
     m2 = None
     if not m1:
         m2 = re.search(
@@ -769,7 +819,6 @@ def esegui(comando, output):
             ).start()
             return True
 
-    # ---- APRI WHATSAPP (senza inviare) ----
     if "apri whatsapp" in c or c == "whatsapp":
         try:
             os.startfile("whatsapp://")
@@ -779,9 +828,7 @@ def esegui(comando, output):
             parla("Apro WhatsApp Web, Padrone~", output)
         return True
 
-    # ============================================================
-    # CONTROLLO PC AVANZATO
-    # ============================================================
+    # ---- CONTROLLO PC ----
     if "processi" in c or "cosa consuma" in c:
         ordine = "cpu" if "cpu" in c else "ram"
         parla(f"Processi per {ordine.upper()}:", output)
@@ -854,9 +901,7 @@ def esegui(comando, output):
         parla(f"Spegno tra {val} {unit}", output)
         return True
 
-    # ============================================================
-    # WEB E COMUNICAZIONE
-    # ============================================================
+    # ---- WEB E COMUNICAZIONE ----
     if "email" in c or "mail" in c:
         if "invia" in c or "manda" in c:
             m = re.search(r"([\w.+-]+@[\w.-]+)\s+(?:oggetto\s+)?(.+?)(?:\s+corpo\s+(.+))?$", cl)
@@ -917,7 +962,7 @@ def esegui(comando, output):
             parla(f"Traduco in {lingua}, Padrone~", output)
         return True
 
-    # ---- RICERCA SU SITI ----
+    # ---- RICERCA ----
     if "cerca su google" in c:
         q = re.sub(r"cerca (su )?google", "", c).strip()
         if q:
@@ -1036,7 +1081,10 @@ def esegui(comando, output):
         threading.Thread(target=analizza_schermo, args=(output,), daemon=True).start()
         return True
     if "minimizza tutto" in c or "mostra desktop" in c:
-        if keyboard: keyboard.press_and_release('windows+d')
+        try:
+            _win_combo([VK_CODES['win'], VK_CODES['d']])
+        except Exception:
+            if keyboard: keyboard.press_and_release('windows+d')
         parla("Fatto, Padrone~", output); return True
     if "chiudi finestra" in c:
         if keyboard: keyboard.press_and_release('alt+f4')
@@ -1208,11 +1256,11 @@ class WakeWord(threading.Thread):
 class GUI:
     def __init__(self, root):
         self.root = root
-        root.title("🦂 S.H.A.U.L.A. v5.2")
+        root.title("🦂 S.H.A.U.L.A. v5.3")
         root.geometry("950x720")
         root.configure(bg="#1a1a2e")
 
-        tk.Label(root, text="🦂  S.H.A.U.L.A. v5.2  🦂",
+        tk.Label(root, text="🦂  S.H.A.U.L.A. v5.3  🦂",
                  font=("Segoe UI", 22, "bold"),
                  bg="#1a1a2e", fg="#ff6b9d").pack(pady=(12, 0))
         tk.Label(root, text="PC avanzato + WhatsApp auto-send + Web",
@@ -1270,10 +1318,10 @@ class GUI:
             self.scrivi("⚠️  Clicca 🔑 API Key per la chiave Gemini!\n")
         else:
             self.scrivi(f"{inizializza_gemini()}\n")
-        backend_wa = "pyautogui" if pyautogui else ("keyboard" if keyboard else "NESSUNO")
+        backend_wa = "pyautogui" if pyautogui else ("keyboard" if keyboard else "winapi (nativo Windows)")
         self.scrivi(f"💬 Backend WhatsApp: {backend_wa}\n")
         self.scrivi("\n💬 WHATSAPP AUTO-SEND:\n")
-        self.scrivi("   'dì a Selua che ti voglio bene'\n")
+        self.scrivi("   'shaula di a Selua che ti voglio bene'\n")
         self.scrivi("   'di a selua ti voglio bene'\n")
         self.scrivi("   'scrivi ad Andrea che ci vediamo domani'\n\n")
 
