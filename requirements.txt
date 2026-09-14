@@ -8,4 +8,5 @@ keyboard
 duckduckgo-search
 pycaw
 comtypes
+requests
 pyinstaller
