@@ -1,5 +1,5 @@
 # ============================================================
-# S.H.A.U.L.A. v5.1 - WhatsApp auto-send in-character
+# S.H.A.U.L.A. v5.2 - WhatsApp con fallback automatico
 # ============================================================
 import os, sys, json, time, shutil, datetime, subprocess
 import threading, webbrowser, ctypes, random, re, glob
@@ -59,7 +59,6 @@ STORICO_FILE = os.path.join(BASE_DIR, "storico.json")
 PLUGIN_FILE = os.path.join(BASE_DIR, "plugins.py")
 NOTE_FILE = os.path.join(BASE_DIR, "note.json")
 AGENDA_FILE = os.path.join(BASE_DIR, "agenda.json")
-CONTATTI_FILE = os.path.join(BASE_DIR, "contatti.json")
 
 def carica_json(p, default):
     if os.path.exists(p):
@@ -80,8 +79,8 @@ def salva_json(p, d):
 
 CONFIG = carica_json(CONFIG_FILE, {
     "gemini_api_key": "",
-    "gemini_model": "gemini-2.0-flash",
-    "gemini_model_fallback": "gemini-2.5-flash-lite",
+    "gemini_model": "gemini-3.6-flash",
+    "gemini_model_fallback": "gemini-3.1-flash-lite",
     "wake_word": "shaula",
     "voce_attiva": True,
     "voce_rate": 180,
@@ -99,7 +98,6 @@ MEMORIA = carica_json(MEMORIA_FILE, {"ricordi": [], "preferenze": {}, "info": {}
 STORICO = carica_json(STORICO_FILE, {"conversazioni": []})
 NOTE = carica_json(NOTE_FILE, {"liste": {}, "note": []})
 AGENDA = carica_json(AGENDA_FILE, {"eventi": []})
-CONTATTI = carica_json(CONTATTI_FILE, {})
 
 # ============================================================
 # SITI WEB
@@ -162,7 +160,7 @@ VERBI_COMANDO = [
     "riassumi", "ricorda", "dimentica", "modalità", "modalita",
     "processi", "pulisci", "email", "mail", "agenda", "evento",
     "nota", "lista", "whatsapp", "dì", "di", "dici", "manda",
-    "invia"
+    "invia", "messaggio"
 ]
 
 def sembra_comando(testo):
@@ -213,8 +211,8 @@ def parla(testo, cb=None):
 modello = None
 chat = None
 MODELLO_ATTIVO = None
-MODELLO_PRIMARIO = CONFIG.get("gemini_model", "gemini-2.0-flash")
-MODELLO_FALLBACK = CONFIG.get("gemini_model_fallback", "gemini-2.5-flash-lite")
+MODELLO_PRIMARIO = CONFIG.get("gemini_model", "gemini-3.6-flash")
+MODELLO_FALLBACK = CONFIG.get("gemini_model_fallback", "gemini-3.1-flash-lite")
 
 PROMPT_BASE = (
     "Sei Shaula di Re:Zero. Chiami l'utente 'Padrone'{nome}. "
@@ -387,21 +385,47 @@ def rispondi_con_ricerca(query, output):
     parla(risposta or risultati[0].get('body', '')[:300], output)
 
 # ============================================================
-# WHATSAPP - INVIO AUTOMATICO IN-CHARACTER
+# WHATSAPP AUTO-SEND (con fallback pyautogui -> keyboard)
 # ============================================================
+def _scrivi(testo, backend):
+    """Scrive del testo usando il backend scelto."""
+    if backend == "pyautogui":
+        pyautogui.write(testo, interval=0.03)
+    else:
+        keyboard.write(testo, delay=0.02)
+
+def _premi(tasto, backend):
+    if backend == "pyautogui":
+        pyautogui.press(tasto)
+    else:
+        keyboard.press_and_release(tasto)
+
+def _scorciatoia(tasti, backend):
+    if backend == "pyautogui":
+        pyautogui.hotkey(*tasti)
+    else:
+        keyboard.press_and_release("+".join(tasti))
+
 def invia_whatsapp_shaula(contatto, messaggio_utente, output):
     """
     Apre WhatsApp Desktop, cerca il contatto, scrive:
     'Ciao! Io sono Shaula, il mio padrone vorrebbe dirti: [messaggio]'
     e invia automaticamente.
+    Usa pyautogui se disponibile, altrimenti keyboard.
     """
-    if not pyautogui:
-        parla("⚠️ Serve la libreria pyautogui per inviare WhatsApp, Padrone~", output)
+    firma = CONFIG.get("firma_shaula", "Ciao! Io sono Shaula, il mio padrone vorrebbe dirti:")
+    messaggio_finale = f"{firma} {messaggio_utente}" if firma else messaggio_utente
+
+    # Scegli il backend
+    if pyautogui:
+        backend = "pyautogui"
+    elif keyboard:
+        backend = "keyboard"
+    else:
+        parla("⚠️ Serve pyautogui o keyboard per WhatsApp, Padrone~", output)
         return False
 
-    firma = CONFIG.get("firma_shaula", "Ciao! Io sono Shaula, il mio padrone vorrebbe dirti:")
-    messaggio_finale = f"{firma} {messaggio_utente}"
-
+    print(f"Backend WhatsApp: {backend}")
     parla(f"Shaula apre WhatsApp per {contatto}... 💕", output)
 
     try:
@@ -409,25 +433,23 @@ def invia_whatsapp_shaula(contatto, messaggio_utente, output):
         try:
             os.startfile("whatsapp://")
         except Exception:
-            # Fallback a WhatsApp Web
             webbrowser.open("https://web.whatsapp.com")
-        time.sleep(6)  # aspetta che si apra
+        time.sleep(6)
 
         # 2. Cerca il contatto (Ctrl+F)
-        pyautogui.hotkey('ctrl', 'f')
+        _scorciatoia(["ctrl", "f"], backend)
         time.sleep(1.5)
-        pyautogui.write(contatto, interval=0.08)
+        _scrivi(contatto, backend)
         time.sleep(2.5)
-        pyautogui.press('enter')
+        _premi("enter", backend)
         time.sleep(2)
 
         # 3. Scrivi il messaggio
-        # Gestisce anche caratteri accentati
-        pyautogui.write(messaggio_finale, interval=0.03)
+        _scrivi(messaggio_finale, backend)
         time.sleep(1)
 
         # 4. Invia
-        pyautogui.press('enter')
+        _premi("enter", backend)
         time.sleep(0.5)
 
         parla(f"Messaggio inviato a {contatto}, Padrone~! 💕 Ehehe~", output)
@@ -714,29 +736,38 @@ def esegui(comando, output):
         return True
 
     # ============================================================
-    # WHATSAPP AUTO-SEND (PRIORITÀ ALTA)
+    # WHATSAPP AUTO-SEND - VERSIONE FLESSIBILE
     # ============================================================
-    # Comandi supportati:
-    #   "dì a Selua che ci vediamo domani"
-    #   "di a Selua che ci vediamo domani"
-    #   "dici a Selua che ci vediamo domani"
-    #   "manda a Selua che ci vediamo domani"
-    #   "scrivi a Selua che ci vediamo domani"
-    #   "invia a Selua che ci vediamo domani"
-    #   "manda whatsapp a Selua che ci vediamo domani"
-    m = re.search(
-        r"^(?:dì|di|dici|manda|invia|scrivi)\s+(?:whatsapp\s+)?a\s+(.+?)\s+che\s+(.+)$",
+    verbi_wa = r"(?:dì|di|dici|manda|invia|scrivi|messaggio)"
+    # Regex 1: con "che" o ":" separatore
+    m1 = re.search(
+        rf"^{verbi_wa}\s+(?:un\s+)?(?:messaggio\s+)?(?:whatsapp\s+)?"
+        rf"(?:a|ad|al|alla)\s+"
+        rf"(?:il\s+contatto\s+|contatto\s+|il\s+|la\s+)?"
+        rf"(.+?)\s*(?:che|:)\s*(.+)$",
         cl, re.IGNORECASE
     )
+    # Regex 2: senza separatore
+    m2 = None
+    if not m1:
+        m2 = re.search(
+            rf"^{verbi_wa}\s+(?:un\s+)?(?:messaggio\s+)?(?:whatsapp\s+)?"
+            rf"(?:a|ad|al|alla)\s+"
+            rf"(?:il\s+contatto\s+|contatto\s+|il\s+|la\s+)?"
+            rf"([A-Za-zÀ-ÿ]+(?:\s+[A-Za-zÀ-ÿ]+)?)\s+(.+)$",
+            cl, re.IGNORECASE
+        )
+    m = m1 or m2
     if m:
         contatto = m.group(1).strip().strip('"').strip("'")
         messaggio = m.group(2).strip()
-        threading.Thread(
-            target=invia_whatsapp_shaula,
-            args=(contatto, messaggio, output),
-            daemon=True
-        ).start()
-        return True
+        if len(messaggio) >= 2 and len(contatto) >= 2:
+            threading.Thread(
+                target=invia_whatsapp_shaula,
+                args=(contatto, messaggio, output),
+                daemon=True
+            ).start()
+            return True
 
     # ---- APRI WHATSAPP (senza inviare) ----
     if "apri whatsapp" in c or c == "whatsapp":
@@ -1177,11 +1208,11 @@ class WakeWord(threading.Thread):
 class GUI:
     def __init__(self, root):
         self.root = root
-        root.title("🦂 S.H.A.U.L.A. v5.1")
+        root.title("🦂 S.H.A.U.L.A. v5.2")
         root.geometry("950x720")
         root.configure(bg="#1a1a2e")
 
-        tk.Label(root, text="🦂  S.H.A.U.L.A. v5.1  🦂",
+        tk.Label(root, text="🦂  S.H.A.U.L.A. v5.2  🦂",
                  font=("Segoe UI", 22, "bold"),
                  bg="#1a1a2e", fg="#ff6b9d").pack(pady=(12, 0))
         tk.Label(root, text="PC avanzato + WhatsApp auto-send + Web",
@@ -1239,13 +1270,12 @@ class GUI:
             self.scrivi("⚠️  Clicca 🔑 API Key per la chiave Gemini!\n")
         else:
             self.scrivi(f"{inizializza_gemini()}\n")
-        if not pyautogui:
-            self.scrivi("⚠️  pyautogui mancante: WhatsApp auto-send non disponibile\n")
+        backend_wa = "pyautogui" if pyautogui else ("keyboard" if keyboard else "NESSUNO")
+        self.scrivi(f"💬 Backend WhatsApp: {backend_wa}\n")
         self.scrivi("\n💬 WHATSAPP AUTO-SEND:\n")
-        self.scrivi("   'dì a Selua che ci vediamo domani'\n")
-        self.scrivi("   'manda a Marco che ti chiamo dopo'\n")
-        self.scrivi("   Shaula scriverà: 'Ciao! Io sono Shaula, il mio padrone\n")
-        self.scrivi("   vorrebbe dirti: [tuo messaggio]' e invierà da sola!\n\n")
+        self.scrivi("   'dì a Selua che ti voglio bene'\n")
+        self.scrivi("   'di a selua ti voglio bene'\n")
+        self.scrivi("   'scrivi ad Andrea che ci vediamo domani'\n\n")
 
         threading.Thread(target=lambda: parla("Shaula è pronta, Padrone~!"), daemon=True).start()
         self.wake = None
