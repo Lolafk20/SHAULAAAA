@@ -15,5 +15,9 @@
   "gmail_password": "",
   "firma_shaula": "Ciao! Io sono Shaula, il mio padrone vorrebbe dirti:",
   "diario_attivo": true,
-  "diario_ogni_giorni": 3
+  "diario_ogni_giorni": 3,
+  "navigazione_attiva": true,
+  "navigazioni_limite_giorno": 5,
+  "navigazioni_usate_oggi": 0,
+  "navigazioni_data": ""
 }
