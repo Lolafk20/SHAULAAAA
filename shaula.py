@@ -1,5 +1,5 @@
 # ============================================================
-# S.H.A.U.L.A. v7.3 - WhatsApp Desktop coordinate corrette
+# S.H.A.U.L.A. v7.5 - WhatsApp veloce
 # ============================================================
 import os, sys, json, time, shutil, datetime, subprocess
 import threading, webbrowser, ctypes, random, re, glob
@@ -1085,149 +1085,154 @@ def statistiche_diario():
             f"• Umore: {umore_top}\n• Ultima: {pagine[-1]['data']}")
 
 # ============================================================
-# WHATSAPP DESKTOP - v7.3 (coordinate corrette)
+# WHATSAPP DESKTOP - v7.5 (tempi ridotti)
 # ============================================================
 VK_CODES = {'enter': 0x0D, 'tab': 0x09, 'esc': 0x1B, 'escape': 0x1B,
     'space': 0x20, 'backspace': 0x08, 'delete': 0x2E,
+    'down': 0x28, 'up': 0x26, 'left': 0x25, 'right': 0x27,
     'ctrl': 0x11, 'control': 0x11, 'shift': 0x10, 'alt': 0x12,
     'win': 0x5B, 'windows': 0x5B, 'f': 0x46, 'a': 0x41, 'c': 0x43,
     'v': 0x56, 'x': 0x58, 'd': 0x44, 's': 0x53, 'z': 0x5A,
-    'w': 0x57, 'q': 0x51, 'left': 0x25, 'up': 0x26, 'right': 0x27, 'down': 0x28}
+    'w': 0x57, 'q': 0x51}
 KEYEVENTF_KEYUP = 0x0002
+
+def _char_to_vk(ch):
+    ch_up = ch.upper()
+    if 'A' <= ch_up <= 'Z':
+        return ord(ch_up)
+    if '0' <= ch_up <= '9':
+        return ord(ch_up)
+    mappa = {
+        ' ': 0x20, '.': 0xBE, ',': 0xBC, ';': 0xBA, ':': 0xBA,
+        "'": 0xDE, '!': 0x31, '?': 0xBF, '-': 0xBD, '_': 0xBD,
+        '@': 0x32, '#': 0x33, '$': 0x34, '%': 0x35, '&': 0x37,
+        '*': 0x38, '+': 0xBB, '=': 0xBB, '/': 0xBF, '\\': 0xDC,
+        '(': 0x39, ')': 0x30, '[': 0xDB, ']': 0xDD, '{': 0xDB,
+        '}': 0xDD, '<': 0xBC, '>': 0xBE, '"': 0xDE,
+        'à': 0xC0, 'è': 0xC8, 'é': 0xC9, 'ì': 0xCC, 'ò': 0xD2, 'ù': 0xD9,
+    }
+    return mappa.get(ch, mappa.get(ch_up, 0))
 
 def _win_key_down(vk): ctypes.windll.user32.keybd_event(vk, 0, 0, 0)
 def _win_key_up(vk): ctypes.windll.user32.keybd_event(vk, 0, KEYEVENTF_KEYUP, 0)
 def _win_press(vk):
-    _win_key_down(vk); time.sleep(0.03); _win_key_up(vk)
+    _win_key_down(vk); time.sleep(0.02); _win_key_up(vk)
+
 def _win_combo(vks):
-    for vk in vks: _win_key_down(vk); time.sleep(0.02)
-    time.sleep(0.05)
-    for vk in reversed(vks): _win_key_up(vk); time.sleep(0.02)
-def _win_copy_to_clipboard(testo):
-    try:
-        r = tk.Tk(); r.withdraw()
-        r.clipboard_clear(); r.clipboard_append(testo); r.update(); r.destroy()
-        return True
-    except: return False
-def _scrivi_universale(testo, backend):
-    if backend == "pyautogui": pyautogui.write(testo, interval=0.03)
-    elif backend == "keyboard": keyboard.write(testo, delay=0.02)
-    else:
-        _win_copy_to_clipboard(testo); time.sleep(0.3)
-        _win_combo([VK_CODES['ctrl'], VK_CODES['v']])
-def _premi_universale(tasto, backend):
-    if backend == "pyautogui": pyautogui.press(tasto)
-    elif backend == "keyboard": keyboard.press_and_release(tasto)
-    else:
-        vk = VK_CODES.get(tasto.lower())
-        if vk: _win_press(vk)
-def _combo_universale(tasti, backend):
-    if backend == "pyautogui": pyautogui.hotkey(*tasti)
-    elif backend == "keyboard": keyboard.press_and_release("+".join(tasti))
-    else:
-        vks = [VK_CODES.get(t.lower()) for t in tasti]
-        vks = [v for v in vks if v]
-        if vks: _win_combo(vks)
+    for vk in vks:
+        _win_key_down(vk); time.sleep(0.012)
+    time.sleep(0.02)
+    for vk in reversed(vks):
+        _win_key_up(vk); time.sleep(0.012)
 
-def _click_primo_risultato(backend):
-    """
-    Clicca sul primo risultato di ricerca di WhatsApp Desktop.
-    Coordinate: la lista risultati è a SINISTRA, il primo risultato è
-    in alto a sinistra (circa 15% larghezza, 20% altezza).
-    """
+def _scrivi_con_tastiera(testo):
+    for char in testo:
+        vk = _char_to_vk(char)
+        if vk == 0:
+            continue
+        richiede_shift = (char.isupper() or char in '!?@#$%^&*()_+{}|:"<>~')
+        if richiede_shift:
+            _win_combo([VK_CODES['shift'], vk])
+        else:
+            _win_press(vk)
+        time.sleep(_rnd.uniform(0.008, 0.025))
+
+def _trova_finestra_whatsapp():
     try:
-        if pyautogui:
-            w, h = pyautogui.size()
-            x = int(w * 0.15)  # CORRETTO: 15% (era 30%, troppo a destra)
-            y = int(h * 0.20)
-            pyautogui.click(x, y)
-            return True
         user32 = ctypes.windll.user32
-        w = user32.GetSystemMetrics(0)
-        h = user32.GetSystemMetrics(1)
-        x = int(w * 0.15)
-        y = int(h * 0.20)
-        user32.SetCursorPos(x, y)
-        time.sleep(0.2)
-        user32.mouse_event(0x0002, 0, 0, 0, 0)
-        time.sleep(0.05)
-        user32.mouse_event(0x0004, 0, 0, 0, 0)
+        handles = []
+        def enum_cb(hwnd, lParam):
+            try:
+                length = user32.GetWindowTextLengthW(hwnd)
+                if length > 0:
+                    buf = ctypes.create_unicode_buffer(length + 1)
+                    user32.GetWindowTextW(hwnd, buf, length + 1)
+                    titolo = buf.value
+                    if titolo and ("WhatsApp" in titolo or "whatsapp" in titolo):
+                        if user32.IsWindowVisible(hwnd):
+                            handles.append(hwnd)
+            except Exception:
+                pass
+            return True
+        WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+        user32.EnumWindows(WNDENUMPROC(enum_cb), 0)
+        return handles[0] if handles else None
+    except Exception as e:
+        print(f"Errore ricerca finestra: {e}")
+        return None
+
+def _porta_whatsapp_in_primo_piano():
+    try:
+        hwnd = _trova_finestra_whatsapp()
+        if not hwnd:
+            return False
+        user32 = ctypes.windll.user32
+        user32.ShowWindow(hwnd, 9)
+        time.sleep(0.3)
+        try:
+            user32.SetForegroundWindow(hwnd)
+        except Exception:
+            user32.BringWindowToTop(hwnd)
+            user32.SetForegroundWindow(hwnd)
+        time.sleep(0.4)
         return True
     except Exception as e:
-        print(f"Errore click risultato: {e}")
-        return False
-
-def _click_campo_messaggio(backend):
-    """
-    Clicca sul campo di scrittura della chat WhatsApp Desktop.
-    Coordinate: il campo è in BASSO a DESTRA (circa 65% larghezza, 92% altezza).
-    """
-    try:
-        if pyautogui:
-            w, h = pyautogui.size()
-            x = int(w * 0.65)  # CORRETTO: 65% (era 50%, troppo a sinistra)
-            y = int(h * 0.92)
-            pyautogui.click(x, y)
-            return True
-        user32 = ctypes.windll.user32
-        w = user32.GetSystemMetrics(0)
-        h = user32.GetSystemMetrics(1)
-        x = int(w * 0.65)
-        y = int(h * 0.92)
-        user32.SetCursorPos(x, y)
-        time.sleep(0.2)
-        user32.mouse_event(0x0002, 0, 0, 0, 0)
-        time.sleep(0.05)
-        user32.mouse_event(0x0004, 0, 0, 0, 0)
-        return True
-    except Exception as e:
-        print(f"Errore click campo: {e}")
+        print(f"Errore primo piano: {e}")
         return False
 
 def invia_whatsapp_shaula(contatto, messaggio_utente, output):
     firma = CONFIG.get("firma_shaula", "Ciao! Io sono Shaula, il mio padrone vorrebbe dirti:")
     msg = f"{firma} {messaggio_utente}" if firma else messaggio_utente
-    backend = "pyautogui" if pyautogui else ("keyboard" if keyboard else "winapi")
+
     parla(f"Shaula apre WhatsApp per {contatto}... 💕", output)
+
     try:
-        # 1. Apri WhatsApp Desktop
-        try:
-            os.startfile("whatsapp://")
-        except Exception:
-            webbrowser.open("https://web.whatsapp.com")
-        time.sleep(10)
+        hwnd = _trova_finestra_whatsapp()
+        if not hwnd:
+            try:
+                os.startfile("whatsapp://")
+            except Exception:
+                parla("❌ WhatsApp Desktop non trovato!", output)
+                return False
+            time.sleep(5)
+        else:
+            _porta_whatsapp_in_primo_piano()
+            time.sleep(1)
 
-        # 2. Apri ricerca (Ctrl+F)
-        _combo_universale(["ctrl", "f"], backend)
-        time.sleep(2)
+        if not _porta_whatsapp_in_primo_piano():
+            parla("❌ Non riesco a portare WhatsApp in primo piano!", output)
+            return False
+        time.sleep(0.4)
 
-        # 3. Pulisci barra ricerca
-        _combo_universale(["ctrl", "a"], backend)
-        time.sleep(0.3)
-        _premi_universale("delete", backend)
-        time.sleep(0.5)
+        parla(f"🔍 Cerco '{contatto}'...", output)
+        _win_combo([VK_CODES['ctrl'], VK_CODES['f']])
+        time.sleep(0.7)
 
-        # 4. Scrivi il nome del contatto
-        _scrivi_universale(contatto, backend)
-        time.sleep(3)
+        _win_combo([VK_CODES['ctrl'], VK_CODES['a']])
+        time.sleep(0.15)
+        _win_press(VK_CODES['delete'])
+        time.sleep(0.2)
 
-        # 5. Clicca sul primo risultato (a SINISTRA, 15%, 20%)
-        _click_primo_risultato(backend)
-        time.sleep(2.5)
+        _scrivi_con_tastiera(contatto)
+        time.sleep(1.2)
 
-        # 6. Clicca sul campo di scrittura (in BASSO a DESTRA, 65%, 92%)
-        _click_campo_messaggio(backend)
+        _win_press(VK_CODES['down'])
+        time.sleep(0.2)
+
+        _win_press(VK_CODES['enter'])
         time.sleep(1.5)
 
-        # 7. Scrivi il messaggio
-        _scrivi_universale(msg, backend)
-        time.sleep(1.5)
+        _win_press(VK_CODES['tab'])
+        time.sleep(0.4)
 
-        # 8. Invia
-        _premi_universale("enter", backend)
-        time.sleep(0.5)
+        parla("✍️ Scrivo il messaggio...", output)
+        _scrivi_con_tastiera(msg)
+        time.sleep(0.6)
 
-        parla(f"Messaggio inviato a {contatto}, Padrone~! 💕", output)
+        _win_press(VK_CODES['enter'])
+        time.sleep(0.4)
+
+        parla(f"✅ Messaggio inviato a {contatto}, Padrone~! 💕", output)
         return True
     except Exception as e:
         parla(f"❌ Errore WhatsApp: {str(e)[:150]}", output)
@@ -1897,11 +1902,11 @@ class WakeWord(threading.Thread):
 class GUI:
     def __init__(self, root):
         self.root = root
-        root.title("🦂 S.H.A.U.L.A. v7.3")
+        root.title("🦂 S.H.A.U.L.A. v7.5")
         root.geometry("950x720")
         root.configure(bg="#1a1a2e")
 
-        tk.Label(root, text="🦂  S.H.A.U.L.A. v7.3  🦂",
+        tk.Label(root, text="🦂  S.H.A.U.L.A. v7.5  🦂",
                  font=("Segoe UI", 22, "bold"), bg="#1a1a2e", fg="#ff6b9d").pack(pady=(12, 0))
         tk.Label(root, text="La tua assistente devota, Padrone~!",
                  font=("Segoe UI", 10, "italic"), bg="#1a1a2e", fg="#a0a0c0").pack()
@@ -1965,7 +1970,7 @@ class GUI:
         except ImportError:
             self.scrivi("🌐 Navigazione: ❌ Playwright non installato\n")
 
-        self.scrivi("\n💡 WhatsApp Desktop: 'di a [nome] che [messaggio]'\n")
+        self.scrivi("\n💡 WhatsApp Desktop (veloce): 'di a [nome] che [messaggio]'\n")
         self.scrivi("💡 Navigazione: 'naviga su google e cerca meteo roma'\n\n")
 
         threading.Thread(target=lambda: parla("Shaula è pronta, Padrone~!"), daemon=True).start()
