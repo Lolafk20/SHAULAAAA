@@ -1,5 +1,5 @@
 # ============================================================
-# S.H.A.U.L.A. v7.5 - WhatsApp veloce
+# S.H.A.U.L.A. v7.6 - WhatsApp senza TAB (fix microfono)
 # ============================================================
 import os, sys, json, time, shutil, datetime, subprocess
 import threading, webbrowser, ctypes, random, re, glob
@@ -1085,7 +1085,7 @@ def statistiche_diario():
             f"• Umore: {umore_top}\n• Ultima: {pagine[-1]['data']}")
 
 # ============================================================
-# WHATSAPP DESKTOP - v7.5 (tempi ridotti)
+# WHATSAPP DESKTOP - v7.6 (TAB rimosso, click diretto sul campo)
 # ============================================================
 VK_CODES = {'enter': 0x0D, 'tab': 0x09, 'esc': 0x1B, 'escape': 0x1B,
     'space': 0x20, 'backspace': 0x08, 'delete': 0x2E,
@@ -1180,6 +1180,26 @@ def _porta_whatsapp_in_primo_piano():
         print(f"Errore primo piano: {e}")
         return False
 
+def _click_sul_campo_messaggio():
+    """Clicca con precisione sul campo di scrittura del messaggio."""
+    try:
+        user32 = ctypes.windll.user32
+        w = user32.GetSystemMetrics(0)
+        h = user32.GetSystemMetrics(1)
+        # Campo di scrittura: 60% larghezza, 92% altezza
+        x = int(w * 0.60)
+        y = int(h * 0.92)
+        user32.SetCursorPos(x, y)
+        time.sleep(0.1)
+        user32.mouse_event(0x0002, 0, 0, 0, 0)  # left down
+        time.sleep(0.05)
+        user32.mouse_event(0x0004, 0, 0, 0, 0)  # left up
+        time.sleep(0.2)
+        return True
+    except Exception as e:
+        print(f"Errore click campo: {e}")
+        return False
+
 def invia_whatsapp_shaula(contatto, messaggio_utente, output):
     firma = CONFIG.get("firma_shaula", "Ciao! Io sono Shaula, il mio padrone vorrebbe dirti:")
     msg = f"{firma} {messaggio_utente}" if firma else messaggio_utente
@@ -1220,10 +1240,11 @@ def invia_whatsapp_shaula(contatto, messaggio_utente, output):
         time.sleep(0.2)
 
         _win_press(VK_CODES['enter'])
-        time.sleep(1.5)
+        time.sleep(2)
 
-        _win_press(VK_CODES['tab'])
-        time.sleep(0.4)
+        # FIX: click preciso sul campo messaggio (in basso)
+        _click_sul_campo_messaggio()
+        time.sleep(0.3)
 
         parla("✍️ Scrivo il messaggio...", output)
         _scrivi_con_tastiera(msg)
@@ -1902,11 +1923,11 @@ class WakeWord(threading.Thread):
 class GUI:
     def __init__(self, root):
         self.root = root
-        root.title("🦂 S.H.A.U.L.A. v7.5")
+        root.title("🦂 S.H.A.U.L.A. v7.6")
         root.geometry("950x720")
         root.configure(bg="#1a1a2e")
 
-        tk.Label(root, text="🦂  S.H.A.U.L.A. v7.5  🦂",
+        tk.Label(root, text="🦂  S.H.A.U.L.A. v7.6  🦂",
                  font=("Segoe UI", 22, "bold"), bg="#1a1a2e", fg="#ff6b9d").pack(pady=(12, 0))
         tk.Label(root, text="La tua assistente devota, Padrone~!",
                  font=("Segoe UI", 10, "italic"), bg="#1a1a2e", fg="#a0a0c0").pack()
@@ -1970,7 +1991,7 @@ class GUI:
         except ImportError:
             self.scrivi("🌐 Navigazione: ❌ Playwright non installato\n")
 
-        self.scrivi("\n💡 WhatsApp Desktop (veloce): 'di a [nome] che [messaggio]'\n")
+        self.scrivi("\n💡 WhatsApp Desktop: 'di a [nome] che [messaggio]'\n")
         self.scrivi("💡 Navigazione: 'naviga su google e cerca meteo roma'\n\n")
 
         threading.Thread(target=lambda: parla("Shaula è pronta, Padrone~!"), daemon=True).start()
