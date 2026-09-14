@@ -13,5 +13,7 @@
   "citta": "Roma",
   "gmail_user": "",
   "gmail_password": "",
-  "firma_shaula": "Ciao! Io sono Shaula, il mio padrone vorrebbe dirti:"
+  "firma_shaula": "Ciao! Io sono Shaula, il mio padrone vorrebbe dirti:",
+  "diario_attivo": true,
+  "diario_ogni_giorni": 3
 }
