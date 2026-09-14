@@ -1,5 +1,5 @@
 # ============================================================
-# S.H.A.U.L.A. v7.1 - Fix navigazione (no await)
+# S.H.A.U.L.A. v7.2 - Fix WhatsApp invio
 # ============================================================
 import os, sys, json, time, shutil, datetime, subprocess
 import threading, webbrowser, ctypes, random, re, glob
@@ -696,7 +696,7 @@ def imposta_motore_scacchi(motore, output):
     return True
 
 # ============================================================
-# NAVIGAZIONE AUTONOMA - HUMAN-LIKE (FIXATO)
+# NAVIGAZIONE AUTONOMA
 # ============================================================
 import random as _rnd
 
@@ -910,7 +910,6 @@ result = "Cercato meteo roma su Google"
         codice = re.sub(r"\s*```$", "", codice)
         codice = codice.strip()
 
-        # FIX: rimuovi 'await' e async se Gemini li genera comunque
         codice = re.sub(r"\bawait\s+", "", codice)
         codice = re.sub(r"\basync\s+def\s+", "def ", codice)
         codice = re.sub(r"\basync\s+with\s+", "with ", codice)
@@ -1086,7 +1085,7 @@ def statistiche_diario():
             f"• Umore: {umore_top}\n• Ultima: {pagine[-1]['data']}")
 
 # ============================================================
-# WHATSAPP
+# WHATSAPP (FIXATO v7.2)
 # ============================================================
 VK_CODES = {'enter': 0x0D, 'tab': 0x09, 'esc': 0x1B, 'escape': 0x1B,
     'space': 0x20, 'backspace': 0x08, 'delete': 0x2E,
@@ -1129,17 +1128,54 @@ def _combo_universale(tasti, backend):
         vks = [VK_CODES.get(t.lower()) for t in tasti]
         vks = [v for v in vks if v]
         if vks: _win_combo(vks)
-def _click_campo_messaggio(backend):
+
+def _click_primo_risultato(backend):
+    """Clicca sul primo risultato di ricerca di WhatsApp Desktop."""
     try:
         if pyautogui:
             w, h = pyautogui.size()
-            pyautogui.click(int(w * 0.5), int(h * 0.92)); return True
+            x = int(w * 0.30)
+            y = int(h * 0.22)
+            pyautogui.click(x, y)
+            return True
         user32 = ctypes.windll.user32
-        w = user32.GetSystemMetrics(0); h = user32.GetSystemMetrics(1)
-        user32.SetCursorPos(int(w * 0.5), int(h * 0.92)); time.sleep(0.1)
-        user32.mouse_event(0x0002, 0, 0, 0, 0); time.sleep(0.05)
-        user32.mouse_event(0x0004, 0, 0, 0, 0); return True
-    except: return False
+        w = user32.GetSystemMetrics(0)
+        h = user32.GetSystemMetrics(1)
+        x = int(w * 0.30)
+        y = int(h * 0.22)
+        user32.SetCursorPos(x, y)
+        time.sleep(0.2)
+        user32.mouse_event(0x0002, 0, 0, 0, 0)
+        time.sleep(0.05)
+        user32.mouse_event(0x0004, 0, 0, 0, 0)
+        return True
+    except Exception as e:
+        print(f"Errore click risultato: {e}")
+        return False
+
+def _click_campo_messaggio(backend):
+    """Clicca sul campo di scrittura della chat WhatsApp."""
+    try:
+        if pyautogui:
+            w, h = pyautogui.size()
+            x = int(w * 0.50)
+            y = int(h * 0.88)
+            pyautogui.click(x, y)
+            return True
+        user32 = ctypes.windll.user32
+        w = user32.GetSystemMetrics(0)
+        h = user32.GetSystemMetrics(1)
+        x = int(w * 0.50)
+        y = int(h * 0.88)
+        user32.SetCursorPos(x, y)
+        time.sleep(0.2)
+        user32.mouse_event(0x0002, 0, 0, 0, 0)
+        time.sleep(0.05)
+        user32.mouse_event(0x0004, 0, 0, 0, 0)
+        return True
+    except Exception as e:
+        print(f"Errore click campo: {e}")
+        return False
 
 def invia_whatsapp_shaula(contatto, messaggio_utente, output):
     firma = CONFIG.get("firma_shaula", "Ciao! Io sono Shaula, il mio padrone vorrebbe dirti:")
@@ -1147,16 +1183,35 @@ def invia_whatsapp_shaula(contatto, messaggio_utente, output):
     backend = "pyautogui" if pyautogui else ("keyboard" if keyboard else "winapi")
     parla(f"Shaula apre WhatsApp per {contatto}... 💕", output)
     try:
-        try: os.startfile("whatsapp://")
-        except: webbrowser.open("https://web.whatsapp.com")
-        time.sleep(8)
-        _combo_universale(["ctrl", "f"], backend); time.sleep(2)
-        _scrivi_universale(contatto, backend); time.sleep(3)
-        _premi_universale("enter", backend); time.sleep(3)
-        _premi_universale("esc", backend); time.sleep(1.5)
-        _click_campo_messaggio(backend); time.sleep(1)
-        _scrivi_universale(msg, backend); time.sleep(1.5)
-        _premi_universale("enter", backend); time.sleep(0.5)
+        try:
+            os.startfile("whatsapp://")
+        except Exception:
+            webbrowser.open("https://web.whatsapp.com")
+        time.sleep(10)
+
+        _combo_universale(["ctrl", "f"], backend)
+        time.sleep(2)
+
+        _combo_universale(["ctrl", "a"], backend)
+        time.sleep(0.3)
+        _premi_universale("delete", backend)
+        time.sleep(0.5)
+
+        _scrivi_universale(contatto, backend)
+        time.sleep(3)
+
+        _click_primo_risultato(backend)
+        time.sleep(2.5)
+
+        _click_campo_messaggio(backend)
+        time.sleep(1.5)
+
+        _scrivi_universale(msg, backend)
+        time.sleep(1.5)
+
+        _premi_universale("enter", backend)
+        time.sleep(0.5)
+
         parla(f"Messaggio inviato a {contatto}, Padrone~! 💕", output)
         return True
     except Exception as e:
@@ -1827,11 +1882,11 @@ class WakeWord(threading.Thread):
 class GUI:
     def __init__(self, root):
         self.root = root
-        root.title("🦂 S.H.A.U.L.A. v7.1")
+        root.title("🦂 S.H.A.U.L.A. v7.2")
         root.geometry("950x720")
         root.configure(bg="#1a1a2e")
 
-        tk.Label(root, text="🦂  S.H.A.U.L.A. v7.1  🦂",
+        tk.Label(root, text="🦂  S.H.A.U.L.A. v7.2  🦂",
                  font=("Segoe UI", 22, "bold"), bg="#1a1a2e", fg="#ff6b9d").pack(pady=(12, 0))
         tk.Label(root, text="La tua assistente devota, Padrone~!",
                  font=("Segoe UI", 10, "italic"), bg="#1a1a2e", fg="#a0a0c0").pack()
@@ -1895,7 +1950,8 @@ class GUI:
         except ImportError:
             self.scrivi("🌐 Navigazione: ❌ Playwright non installato\n")
 
-        self.scrivi("\n💡 Prova: 'naviga su google e cerca meteo roma'\n\n")
+        self.scrivi("\n💡 WhatsApp: 'di a [nome] che [messaggio]'\n")
+        self.scrivi("💡 Navigazione: 'naviga su google e cerca meteo roma'\n\n")
 
         threading.Thread(target=lambda: parla("Shaula è pronta, Padrone~!"), daemon=True).start()
         self.wake = None
