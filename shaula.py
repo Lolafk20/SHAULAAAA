@@ -1,5 +1,5 @@
 # ============================================================
-# S.H.A.U.L.A. v7.0 - Con gioco scacchi
+# S.H.A.U.L.A. v7.1 - Fix navigazione (no await)
 # ============================================================
 import os, sys, json, time, shutil, datetime, subprocess
 import threading, webbrowser, ctypes, random, re, glob
@@ -377,7 +377,7 @@ def rispondi_con_ricerca(query, output):
     parla(risposta or risultati[0].get('body', '')[:300], output)
 
 # ============================================================
-# SCACCHI - MOTORE MINIMAX INTERNO + GUI
+# SCACCHI
 # ============================================================
 VALORI_PEZZI = {'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 20000}
 SIMBOLI_UNICODE = {
@@ -386,7 +386,6 @@ SIMBOLI_UNICODE = {
 }
 
 def _valuta_scacchiera(board):
-    """Valutazione semplice: materiale + posizione."""
     if board.is_checkmate():
         return -99999 if board.turn else 99999
     if board.is_stalemate() or board.is_insufficient_material():
@@ -403,10 +402,8 @@ def _valuta_scacchiera(board):
     return score
 
 def _minimax(board, depth, alpha, beta, maximizing):
-    """Minimax con alpha-beta pruning."""
     if depth == 0 or board.is_game_over():
         return _valuta_scacchiera(board)
-    
     if maximizing:
         max_eval = -99999
         for move in board.legal_moves:
@@ -415,8 +412,7 @@ def _minimax(board, depth, alpha, beta, maximizing):
             board.pop()
             max_eval = max(max_eval, eval_score)
             alpha = max(alpha, eval_score)
-            if beta <= alpha:
-                break
+            if beta <= alpha: break
         return max_eval
     else:
         min_eval = 99999
@@ -426,17 +422,14 @@ def _minimax(board, depth, alpha, beta, maximizing):
             board.pop()
             min_eval = min(min_eval, eval_score)
             beta = min(beta, eval_score)
-            if beta <= alpha:
-                break
+            if beta <= alpha: break
         return min_eval
 
 def _mossa_motore_interno(board, profondita=3):
-    """Trova la mossa migliore con minimax."""
     migliore = None
     max_eval = -99999
     mosse = list(board.legal_moves)
-    random.shuffle(mosse)  # varia per non essere prevedibile
-    
+    random.shuffle(mosse)
     for move in mosse:
         board.push(move)
         eval_score = _minimax(board, profondita - 1, -99999, 99999, False)
@@ -447,14 +440,12 @@ def _mossa_motore_interno(board, profondita=3):
     return migliore
 
 def _mossa_stockfish(board, livello="medio"):
-    """Trova la mossa con Stockfish (se disponibile)."""
     if not os.path.exists(STOCKFISH_EXE):
         return None
     try:
         import chess.engine
         profondita_map = {"facile": 2, "medio": 6, "difficile": 12, "maestro": 18}
         depth = profondita_map.get(livello, 6)
-        
         engine = chess.engine.SimpleEngine.popen_uci(STOCKFISH_EXE)
         result = engine.play(board, chess.engine.Limit(depth=depth))
         engine.quit()
@@ -464,151 +455,100 @@ def _mossa_stockfish(board, livello="medio"):
         return None
 
 class ScacchieraGUI:
-    """Interfaccia grafica per giocare a scacchi con SHAULA."""
-    
     def __init__(self, root, modo="vs_me", output_cb=None):
         self.root = root
         self.output = output_cb or print
-        self.modo = modo  # "vs_me" o "auto"
+        self.modo = modo
         self.board = chess.Board()
         self.casa_selezionata = None
         self.mosse_legali_da_casa = []
         self.partita_finita = False
-        
-        # Livello
         self.livello = CONFIG.get("scacchi_livello", "medio")
         self.motore = CONFIG.get("scacchi_motore", "interno")
-        
-        # Colori GUI
         self.colore_chiaro = "#F0D9B5"
         self.colore_scuro = "#B58863"
         self.colore_selezione = "#7FB069"
         self.colore_mossa_legale = "#FFD966"
         self.colore_ultima_mossa = "#E8B923"
-        
         self.ultima_mossa = None
-        
         self.root.title("🦂 SHAULA - Scacchi")
         self.root.geometry("700x800")
         self.root.configure(bg="#1a1a2e")
-        
         self._costruisci_gui()
         self._aggiorna_scacchiera()
-        
-        # Se in modalità auto, Shaula fa la prima mossa se è il suo turno
         if self.modo == "auto" and not self.board.turn:
             self.root.after(1000, self._mossa_shaula)
-    
+
     def _costruisci_gui(self):
-        # Header
         tk.Label(self.root, text="🦂 SHAULA - Scacchi ♟️",
                  font=("Segoe UI", 18, "bold"),
                  bg="#1a1a2e", fg="#ff6b9d").pack(pady=8)
-        
-        # Info
-        self.info_label = tk.Label(self.root, text="",
-                                    font=("Segoe UI", 10),
+        self.info_label = tk.Label(self.root, text="", font=("Segoe UI", 10),
                                     bg="#1a1a2e", fg="#a0a0c0")
         self.info_label.pack()
-        
-        # Canvas scacchiera
         self.canvas = tk.Canvas(self.root, width=640, height=640,
                                  bg="#0f0f1e", highlightthickness=0)
         self.canvas.pack(pady=10)
         self.canvas.bind("<Button-1>", self._click_scacchiera)
-        
-        # Frame bottoni
         f = tk.Frame(self.root, bg="#1a1a2e")
         f.pack(pady=8)
-        
         tk.Button(f, text="🔄 Nuova partita", command=self._nuova_partita,
                   bg="#4a90e2", fg="white", font=("Segoe UI", 10, "bold"),
                   relief=tk.FLAT, padx=12).pack(side=tk.LEFT, padx=4)
-        
         tk.Button(f, text="↩️ Annulla mossa", command=self._annulla_mossa,
                   bg="#ffcc66", fg="#1a1a2e", font=("Segoe UI", 10, "bold"),
                   relief=tk.FLAT, padx=12).pack(side=tk.LEFT, padx=4)
-        
         tk.Button(f, text="🏳️ Arrenditi", command=self._arrenditi,
                   bg="#ff6b6b", fg="white", font=("Segoe UI", 10, "bold"),
                   relief=tk.FLAT, padx=12).pack(side=tk.LEFT, padx=4)
-        
         tk.Button(f, text="❌ Chiudi", command=self._chiudi,
                   bg="#7a7a7a", fg="white", font=("Segoe UI", 10, "bold"),
                   relief=tk.FLAT, padx=12).pack(side=tk.LEFT, padx=4)
-        
-        # Info livello
         tk.Label(self.root, text=f"Livello: {self.livello} | Motore: {self.motore}",
-                 font=("Segoe UI", 9),
-                 bg="#1a1a2e", fg="#7fdb8f").pack()
-    
+                 font=("Segoe UI", 9), bg="#1a1a2e", fg="#7fdb8f").pack()
+
     def _coord_to_rc(self, square):
-        """Converte chess.Square in riga/colonna GUI."""
-        col = chess.square_file(square)
-        row = 7 - chess.square_rank(square)
-        return row, col
-    
+        return 7 - chess.square_rank(square), chess.square_file(square)
+
     def _rc_to_coord(self, row, col):
-        """Converte riga/colonna GUI in chess.Square."""
-        file = col
-        rank = 7 - row
-        return chess.square(file, rank)
-    
+        return chess.square(col, 7 - row)
+
     def _aggiorna_scacchiera(self):
         self.canvas.delete("all")
         lato = 80
-        
-        # Disegna caselle
         for row in range(8):
             for col in range(8):
-                x1 = col * lato
-                y1 = row * lato
-                x2 = x1 + lato
-                y2 = y1 + lato
-                
+                x1, y1 = col * lato, row * lato
+                x2, y2 = x1 + lato, y1 + lato
                 colore = self.colore_chiaro if (row + col) % 2 == 0 else self.colore_scuro
-                
-                # Highlight ultima mossa
                 if self.ultima_mossa:
                     for sq in self.ultima_mossa:
-                        sq_row, sq_col = self._coord_to_rc(sq)
-                        if sq_row == row and sq_col == col:
+                        sr, sc = self._coord_to_rc(sq)
+                        if sr == row and sc == col:
                             colore = self.colore_ultima_mossa
-                
-                # Highlight selezione
                 if self.casa_selezionata:
-                    s_row, s_col = self._coord_to_rc(self.casa_selezionata)
-                    if s_row == row and s_col == col:
+                    sr, sc = self._coord_to_rc(self.casa_selezionata)
+                    if sr == row and sc == col:
                         colore = self.colore_selezione
-                
                 self.canvas.create_rectangle(x1, y1, x2, y2, fill=colore, outline="")
-                
-                # Highlight mosse legali
                 for mossa in self.mosse_legali_da_casa:
-                    to_row, to_col = self._coord_to_rc(mossa.to_square)
-                    if to_row == row and to_col == col:
+                    tr, tc = self._coord_to_rc(mossa.to_square)
+                    if tr == row and tc == col:
                         self.canvas.create_oval(x1 + 25, y1 + 25, x2 - 25, y2 - 25,
                                                 fill=self.colore_mossa_legale, outline="")
-        
-        # Disegna pezzi
         for square in chess.SQUARES:
             pezzo = self.board.piece_at(square)
             if pezzo:
                 row, col = self._coord_to_rc(square)
                 x = col * lato + lato // 2
                 y = row * lato + lato // 2
-                
                 symbol = SIMBOLI_UNICODE.get(pezzo.symbol(), '?')
                 colore_testo = "#FFFFFF" if pezzo.color == chess.WHITE else "#000000"
-                
-                self.canvas.create_text(x, y, text=symbol, font=("Segoe UI Symbol", 54),
-                                        fill=colore_testo)
-        
-        # Info turno
+                self.canvas.create_text(x, y, text=symbol,
+                                        font=("Segoe UI Symbol", 54), fill=colore_testo)
         if self.board.is_checkmate():
             vincitore = "Nero" if self.board.turn else "Bianco"
-            self.info_label.config(text=f"🏆 Scacco matto! Vince il {vincitore}!",
-                                    fg="#7fdb8f")
+            self.info_label.config(text=f"🏆 Scacco matto! Vince il {vincitore}!", fg="#7fdb8f")
             self.partita_finita = True
         elif self.board.is_stalemate():
             self.info_label.config(text="🤝 Stallo! Pareggio.", fg="#ffcc66")
@@ -619,122 +559,80 @@ class ScacchieraGUI:
         else:
             turno = "Bianco" if self.board.turn else "Nero"
             self.info_label.config(text=f"Turno: {turno}", fg="#a0a0c0")
-    
+
     def _click_scacchiera(self, event):
-        if self.partita_finita:
-            return
-        
-        # Se modalità auto, ignora click
-        if self.modo == "auto":
-            return
-        
-        # Solo se è il turno del giocatore umano (Bianco = umano)
-        if not self.board.turn:
-            return
-        
-        col = event.x // 80
-        row = event.y // 80
-        if not (0 <= row < 8 and 0 <= col < 8):
-            return
-        
+        if self.partita_finita or self.modo == "auto": return
+        if not self.board.turn: return
+        col = event.x // 80; row = event.y // 80
+        if not (0 <= row < 8 and 0 <= col < 8): return
         square = self._rc_to_coord(row, col)
         pezzo = self.board.piece_at(square)
-        
-        # Se ho già selezionato una casa
         if self.casa_selezionata:
-            # Se clicco su una mossa legale, la eseguo
             mossa_trovata = None
             for m in self.mosse_legali_da_casa:
                 if m.to_square == square:
-                    # Gestisci promozione
-                    if m.promotion:
-                        mossa_trovata = chess.Move(m.from_square, m.to_square,
-                                                    promotion=chess.QUEEN)
-                    else:
-                        mossa_trovata = m
+                    mossa_trovata = chess.Move(m.from_square, m.to_square,
+                                                promotion=chess.QUEEN) if m.promotion else m
                     break
-            
             if mossa_trovata:
                 self._esegui_mossa(mossa_trovata)
                 self.casa_selezionata = None
                 self.mosse_legali_da_casa = []
                 self._aggiorna_scacchiera()
-                # Turno di Shaula dopo breve pausa
                 if not self.partita_finita:
                     self.root.after(500, self._mossa_shaula)
                 return
-            
-            # Se clicco su un altro pezzo bianco, cambio selezione
             if pezzo and pezzo.color == chess.WHITE:
                 self.casa_selezionata = square
                 self.mosse_legali_da_casa = [m for m in self.board.legal_moves
                                               if m.from_square == square]
                 self._aggiorna_scacchiera()
                 return
-            else:
-                # Deseleziona
-                self.casa_selezionata = None
-                self.mosse_legali_da_casa = []
-                self._aggiorna_scacchiera()
-                return
-        
-        # Nessuna casa selezionata
+            self.casa_selezionata = None
+            self.mosse_legali_da_casa = []
+            self._aggiorna_scacchiera()
+            return
         if pezzo and pezzo.color == chess.WHITE:
             self.casa_selezionata = square
             self.mosse_legali_da_casa = [m for m in self.board.legal_moves
                                           if m.from_square == square]
             self._aggiorna_scacchiera()
-    
+
     def _esegui_mossa(self, mossa):
-        # Traccia ultima mossa
         self.ultima_mossa = (mossa.from_square, mossa.to_square)
-        # Esegui
         san = self.board.san(mossa)
         self.board.push(mossa)
         return san
-    
+
     def _mossa_shaula(self):
-        """Fa fare una mossa a SHAULA."""
-        if self.partita_finita:
-            return
-        if self.board.turn:
-            # Non è il turno di Shaula (lei gioca con il Nero)
-            return
-        
+        if self.partita_finita: return
+        if self.board.turn: return
         self.info_label.config(text="🤔 Shaula sta pensando...", fg="#ffcc66")
         self.root.update()
-        
         def _calcola():
             mossa = None
             if self.motore == "stockfish" and os.path.exists(STOCKFISH_EXE):
                 mossa = _mossa_stockfish(self.board, self.livello)
-            
             if not mossa:
-                # Fallback a motore interno
-                profondita_map = {"facile": 2, "medio": 3, "difficile": 4, "maestro": 4}
-                depth = profondita_map.get(self.livello, 3)
-                mossa = _mossa_motore_interno(self.board, depth)
-            
+                pm = {"facile": 2, "medio": 3, "difficile": 4, "maestro": 4}
+                mossa = _mossa_motore_interno(self.board, pm.get(self.livello, 3))
             if mossa:
                 self.root.after(0, lambda: self._esegui_mossa_shaula(mossa))
-        
         threading.Thread(target=_calcola, daemon=True).start()
-    
+
     def _esegui_mossa_shaula(self, mossa):
         san = self._esegui_mossa(mossa)
         self._aggiorna_scacchiera()
-        
         if not self.partita_finita:
-            # Commenta la mossa
             def _commenta():
-                prompt = (f"Sei Shaula di Re:Zero. Hai appena mosso '{san}' in una partita a scacchi. "
-                          f"Commenta brevemente la tua mossa in una frase, con la tua personalità "
-                          f"(devota, '~', 'ehehe', emoji 🦂💕). Non superare le 20 parole.")
+                prompt = (f"Sei Shaula di Re:Zero. Hai appena mosso '{san}' in una partita "
+                          f"a scacchi. Commenta brevemente la tua mossa in una frase, con "
+                          f"la tua personalità (devota, '~', 'ehehe', emoji 🦂💕). "
+                          f"Non superare le 20 parole.")
                 risposta = chiedi_gemini(prompt)
-                if risposta:
-                    parla(risposta, self.output)
+                if risposta: parla(risposta, self.output)
             threading.Thread(target=_commenta, daemon=True).start()
-    
+
     def _nuova_partita(self):
         self.board = chess.Board()
         self.casa_selezionata = None
@@ -745,77 +643,60 @@ class ScacchieraGUI:
         self.info_label.config(text="🔄 Nuova partita!", fg="#7fdb8f")
         if self.modo == "auto":
             self.root.after(1000, self._mossa_shaula)
-    
+
     def _annulla_mossa(self):
         if len(self.board.move_stack) >= 2:
-            self.board.pop()
-            self.board.pop()
+            self.board.pop(); self.board.pop()
             self.ultima_mossa = None
             self.casa_selezionata = None
             self.mosse_legali_da_casa = []
             self.partita_finita = False
             self._aggiorna_scacchiera()
             self.info_label.config(text="↩️ Mossa annullata", fg="#ffcc66")
-        elif len(self.board.move_stack) == 1 and not self.board.turn:
-            self.board.pop()
-            self._aggiorna_scacchiera()
-    
+
     def _arrenditi(self):
         vincitore = "Shaula vince! 🎉" if self.board.turn else "Hai vinto tu! 🏆"
         self.info_label.config(text=f"🏳️ {vincitore}", fg="#7fdb8f")
         self.partita_finita = True
-    
+
     def _chiudi(self):
         self.root.destroy()
 
 def avvia_scacchi(modo, output):
-    """Apre la finestra degli scacchi."""
     if not chess:
-        parla("❌ Libreria 'chess' non installata, Padrone~! Ricompila con requirements aggiornato.", output)
+        parla("❌ Libreria 'chess' non installata!", output)
         return False
-    
     def _apri():
         try:
             finestra = tk.Toplevel()
             ScacchieraGUI(finestra, modo=modo, output_cb=output)
             if modo == "vs_me":
-                parla("Shaula è pronta a giocare, Padrone~! Tu giochi con il Bianco, "
-                      "Shaula con il Nero. Buona partita! ♟️💕", output)
-            elif modo == "auto":
-                parla("Shaula gioca contro se stessa, Padrone~! "
-                      "Guardiamo insieme la partita! ♟️✨", output)
+                parla("Shaula è pronta a giocare! Tu Bianco, Shaula Nero. ♟️💕", output)
+            else:
+                parla("Shaula gioca contro se stessa! ♟️✨", output)
         except Exception as e:
-            parla(f"❌ Errore apertura scacchiera: {str(e)[:150]}", output)
-    
+            parla(f"❌ Errore scacchiera: {str(e)[:150]}", output)
     threading.Thread(target=_apri, daemon=True).start()
     return True
 
 def imposta_livello_scacchi(livello, output):
-    livelli_validi = ["facile", "medio", "difficile", "maestro"]
-    if livello not in livelli_validi:
-        parla(f"Livelli: {', '.join(livelli_validi)}", output)
-        return False
+    if livello not in ["facile", "medio", "difficile", "maestro"]:
+        parla("Livelli: facile, medio, difficile, maestro", output); return False
     CONFIG["scacchi_livello"] = livello
     salva_json(CONFIG_FILE, CONFIG)
-    parla(f"Livello scacchi impostato a '{livello}', Padrone~! ♟️", output)
+    parla(f"Livello scacchi: {livello} ♟️", output)
     return True
 
 def imposta_motore_scacchi(motore, output):
     if motore not in ["interno", "stockfish"]:
-        parla("Motori disponibili: interno, stockfish", output)
-        return False
+        parla("Motori: interno, stockfish", output); return False
     CONFIG["scacchi_motore"] = motore
     salva_json(CONFIG_FILE, CONFIG)
-    if motore == "stockfish" and not os.path.exists(STOCKFISH_EXE):
-        parla(f"⚠️ Stockfish non trovato in {STOCKFISH_EXE}. "
-              f"Scaricalo da stockfishchess.org e mettilo nella cartella di SHAULA! "
-              f"Nel frattempo uso il motore interno. ♟️", output)
-    else:
-        parla(f"Motore scacchi: {motore}, Padrone~!", output)
+    parla(f"Motore scacchi: {motore}", output)
     return True
 
 # ============================================================
-# NAVIGAZIONE AUTONOMA - HUMAN-LIKE
+# NAVIGAZIONE AUTONOMA - HUMAN-LIKE (FIXATO)
 # ============================================================
 import random as _rnd
 
@@ -847,7 +728,6 @@ def _attendi_risoluzione_captcha(page, output, timeout=120):
               "clicca 'Non sono un robot', poi aspetta. Shaula riprende da sola! 🦂", output)
     except Exception:
         parla("⚠️ CAPTCHA rilevato! Risolvilo in Chrome, Padrone~!", output)
-
     for _ in range(timeout):
         time.sleep(1)
         if not _rileva_captcha(page):
@@ -858,8 +738,7 @@ def _attendi_risoluzione_captcha(page, output, timeout=120):
 
 def _mouse_umano(page, x, y):
     try:
-        x0 = _rnd.randint(200, 800)
-        y0 = _rnd.randint(200, 600)
+        x0 = _rnd.randint(200, 800); y0 = _rnd.randint(200, 600)
         cx1 = x0 + (x - x0) * _rnd.uniform(0.2, 0.4) + _rnd.randint(-80, 80)
         cy1 = y0 + (y - y0) * _rnd.uniform(0.2, 0.4) + _rnd.randint(-80, 80)
         cx2 = x0 + (x - x0) * _rnd.uniform(0.6, 0.8) + _rnd.randint(-80, 80)
@@ -869,8 +748,7 @@ def _mouse_umano(page, x, y):
             t = i / punti
             x_t = ((1-t)**3 * x0 + 3*(1-t)**2*t*cx1 + 3*(1-t)*t**2*cx2 + t**3 * x)
             y_t = ((1-t)**3 * y0 + 3*(1-t)**2*t*cy1 + 3*(1-t)*t**2*cy2 + t**3 * y)
-            x_t += _rnd.uniform(-1.5, 1.5)
-            y_t += _rnd.uniform(-1.5, 1.5)
+            x_t += _rnd.uniform(-1.5, 1.5); y_t += _rnd.uniform(-1.5, 1.5)
             page.mouse.move(x_t, y_t)
             time.sleep(_rnd.uniform(0.003, 0.012))
     except Exception as e:
@@ -879,6 +757,8 @@ def _mouse_umano(page, x, y):
 def _click_umano(page, x, y):
     _mouse_umano(page, x, y)
     _pausa_breve()
+    if _rnd.random() < 0.4:
+        time.sleep(_rnd.uniform(0.1, 0.4))
     page.mouse.click(x, y)
 
 def _scrivi_umano(page, selettore, testo):
@@ -897,8 +777,15 @@ def _scrivi_umano(page, selettore, testo):
             if _rnd.random() < 0.06: base_delay += _rnd.uniform(0.3, 0.9)
             page.keyboard.type(char)
             time.sleep(base_delay)
+            if _rnd.random() < 0.015 and char.isalpha() and i > 2:
+                sbagliato = _rnd.choice("abcdefghijklmnopqrstuvwxyz")
+                page.keyboard.type(sbagliato)
+                time.sleep(_rnd.uniform(0.05, 0.15))
+                page.keyboard.press("Backspace")
+                time.sleep(_rnd.uniform(0.08, 0.2))
         return True
-    except Exception:
+    except Exception as e:
+        print(f"Errore digitazione: {e}")
         return False
 
 def _scroll_umano(page, volte=2):
@@ -907,6 +794,9 @@ def _scroll_umano(page, volte=2):
         try: page.mouse.wheel(0, delta)
         except: pass
         time.sleep(_rnd.uniform(0.5, 1.8))
+        if _rnd.random() < 0.25:
+            page.mouse.wheel(0, -_rnd.randint(50, 150))
+            time.sleep(_rnd.uniform(0.3, 0.8))
 
 def _muovi_e_clicca_umano(page, testo_selettore=None, selettore=None):
     try:
@@ -923,7 +813,8 @@ def _muovi_e_clicca_umano(page, testo_selettore=None, selettore=None):
         y = box["y"] + box["height"] * _rnd.uniform(0.3, 0.7)
         _click_umano(page, x, y)
         return True
-    except Exception:
+    except Exception as e:
+        print(f"Errore click umano: {e}")
         return False
 
 def stato_navigazioni():
@@ -976,16 +867,58 @@ def naviga_autonomo(azione, output):
         key = CONFIG["gemini_api_key"].strip()
         genai.configure(api_key=key)
         m = genai.GenerativeModel(MODELLO_ATTIVO or MODELLO_FALLBACK)
-        prompt = f"""Genera SOLO codice Playwright Python per: "{azione}"
-Usa `page` già disponibile. Aiutanti: _pausa_breve(), _scrivi_umano(page, sel, txt),
-_muovi_e_clicca_umano(page, testo_selettore='...'). Max 15 righe.
-Alla fine salva `result` con riassunto. Solo codice, niente markdown."""
+        prompt = f"""Sei un generatore di codice Playwright Python SINCRONO (NON async).
+L'utente vuole: "{azione}"
+
+Genera SOLO il codice Python SINCRONO (nessun commento, nessun markdown) che:
+- Usa la variabile `page` già disponibile
+- Compie l'azione passo passo
+- Usa selettori robusti (testo visibile, role, placeholder, name)
+- Tra le azioni usa SEMPRE una di queste funzioni helper già definite:
+  * `_pausa_breve()` - pausa breve
+  * `_pausa_umana()` - pausa di riflessione
+  * `_scroll_umano(page)` - scroll naturale
+  * `_scrivi_umano(page, selettore, testo)` - scrittura umana in un campo
+  * `_muovi_e_clicca_umano(page, testo_selettore='...')` - click su testo
+- Usa `page.goto(url)` per navigare
+- Aspetta il caricamento con `page.wait_for_timeout(2000)`
+- Massimo 15 righe di codice
+- Alla fine, salva una variabile `result` con un riassunto testuale (max 200 caratteri)
+
+REGOLE FONDAMENTALI:
+- Scrivi SOLO codice Python SINCRONO
+- NON usare MAI `await`
+- NON usare MAI `async def`
+- NON usare MAI `async with`
+- NON usare MAI `async for`
+- NON usare MAI `asyncio`
+- Niente markdown, niente ```python, niente spiegazioni
+- Inizia direttamente con page.xxx o con _pausa_breve()
+
+Esempio corretto:
+page.goto("https://www.google.com")
+_pausa_breve()
+page.fill("textarea[name=q]", "meteo roma")
+page.keyboard.press("Enter")
+_pausa_umana()
+result = "Cercato meteo roma su Google"
+"""
         r = m.generate_content(prompt)
         codice = r.text.strip()
         codice = re.sub(r"^```python\s*", "", codice)
         codice = re.sub(r"^```\s*", "", codice)
         codice = re.sub(r"\s*```$", "", codice)
-        print(f"Codice:\n{codice}")
+        codice = codice.strip()
+
+        # FIX: rimuovi 'await' e async se Gemini li genera comunque
+        codice = re.sub(r"\bawait\s+", "", codice)
+        codice = re.sub(r"\basync\s+def\s+", "def ", codice)
+        codice = re.sub(r"\basync\s+with\s+", "with ", codice)
+        codice = re.sub(r"\basync\s+for\s+", "for ", codice)
+        codice = re.sub(r"asyncio\.run\([^)]*\)", "", codice)
+        codice = re.sub(r"import\s+asyncio\s*\n?", "", codice)
+
+        print(f"Codice navigazione (fixato):\n{codice}")
     except Exception as e:
         parla(f"❌ Errore piano: {str(e)[:150]}", output)
         return False
@@ -1015,10 +948,14 @@ Alla fine salva `result` con riassunto. Solo codice, niente markdown."""
 
                 namespace = {"page": page, "result": None, "time": time,
                              "_rnd": _rnd, "_pausa_breve": _pausa_breve,
+                             "_pausa_umana": _pausa_umana,
+                             "_pausa_lunga": _pausa_lunga,
+                             "_scroll_umano": _scroll_umano,
                              "_scrivi_umano": _scrivi_umano,
-                             "_muovi_e_clicca_umano": _muovi_e_clicca_umano,
-                             "_click_umano": _click_umano}
-                try: exec(codice, namespace)
+                             "_click_umano": _click_umano,
+                             "_muovi_e_clicca_umano": _muovi_e_clicca_umano}
+                try:
+                    exec(codice, namespace)
                 except Exception as e:
                     parla(f"❌ Errore nav: {str(e)[:150]}", output)
                     try: browser.close()
@@ -1073,7 +1010,6 @@ def _genera_pagina_diario(manuale=False):
         return None, "⚠️ Serve la API key Gemini"
     try: genai.configure(api_key=CONFIG["gemini_api_key"].strip())
     except: pass
-
     giorni = CONFIG.get("diario_ogni_giorni", 3)
     soglia = datetime.datetime.now() - datetime.timedelta(days=giorni)
     conv_recenti = []
@@ -1082,10 +1018,8 @@ def _genera_pagina_diario(manuale=False):
             if datetime.datetime.fromisoformat(c["data"]) >= soglia:
                 conv_recenti.append(c)
         except: continue
-
     if not conv_recenti:
         return None, "Nessuna conversazione recente"
-
     testo_conv = "".join(f"Tu: {c['utente'][:150]}\nShaula: {c['shaula'][:150]}\n"
                         for c in conv_recenti[-30:])
     info_padrone = ""
@@ -1093,26 +1027,22 @@ def _genera_pagina_diario(manuale=False):
         info_padrone = "Info: " + json.dumps(MEMORIA["info"], ensure_ascii=False)
     if MEMORIA["ricordi"]:
         info_padrone += "\nRicordi: " + "; ".join(MEMORIA["ricordi"][-5:])
-
     tipo = "su richiesta" if manuale else f"dopo {giorni} giorni"
     prompt = (f"Scrivi pagina di diario (Shaula di Re:Zero) scritta {tipo}.\n"
               f"Conversazioni:\n{testo_conv}\n{info_padrone}\n\n"
               f"Formato:\nTITOLO: ...\nUMORE: ...\nVOTO: ...\nCONTENUTO: ...")
-
     try:
         sys_p = "Sei Shaula. Chiami l'utente 'Padrone'. Usi '~' e 'ehehe'."
         m = genai.GenerativeModel(MODELLO_ATTIVO or MODELLO_FALLBACK, system_instruction=sys_p)
         testo = m.generate_content(prompt).text.strip()
     except Exception as e:
         return None, f"❌ Errore: {str(e)[:150]}"
-
     titolo, umore, voto, contenuto = "Una giornata", "felice", 8, testo
     mt = re.search(r"TITOLO:\s*(.+)", testo); titolo = mt.group(1).strip() if mt else titolo
     mu = re.search(r"UMORE:\s*(\w+)", testo); umore = mu.group(1).strip().lower() if mu else umore
     mv = re.search(r"VOTO:\s*(\d+)", testo); voto = int(mv.group(1)) if mv else voto
     mc = re.search(r"CONTENUTO:\s*(.+)", testo, re.DOTALL)
     contenuto = mc.group(1).strip() if mc else testo
-
     pagina = {"data": datetime.date.today().isoformat(),
               "ora": datetime.datetime.now().strftime("%H:%M"),
               "titolo": titolo, "umore": umore, "voto": voto,
@@ -1438,18 +1368,14 @@ def esegui(comando, output):
 
     estrai_info_automatiche(cl, output)
 
-    # ============================================================
-    # SCACCHI
-    # ============================================================
+    # ---- SCACCHI ----
     if any(p in c for p in ["gioca a scacchi", "giochiamo a scacchi", "partita a scacchi",
                               "apri scacchi", "avvia scacchi"]):
-        # Determina modo
         if "contro di me" in c or "con me" in c or "insieme a me" in c:
             avvia_scacchi("vs_me", output)
         elif "da sola" in c or "auto" in c or "contro se stessa" in c or "sola" in c:
             avvia_scacchi("auto", output)
         else:
-            # Default: contro di te
             avvia_scacchi("vs_me", output)
         return True
 
@@ -1466,7 +1392,7 @@ def esegui(comando, output):
             imposta_motore_scacchi("interno", output); return True
         parla("Motori: interno, stockfish", output); return True
 
-    # ---- STATO NAVIGAZIONI ----
+    # ---- NAVIGAZIONI ----
     if "navigazioni" in c and any(w in c for w in ["quante", "stato", "limite", "rimaste", "restano"]):
         parla(stato_navigazioni(), output); return True
 
@@ -1581,7 +1507,7 @@ def esegui(comando, output):
         except: webbrowser.open("https://web.whatsapp.com"); parla("Apro WhatsApp Web!", output)
         return True
 
-    # ---- PC AVANZATO ----
+    # ---- PC ----
     if "processi" in c or "cosa consuma" in c:
         ordine = "cpu" if "cpu" in c else "ram"
         parla(f"Processi per {ordine.upper()}:", output)
@@ -1901,11 +1827,11 @@ class WakeWord(threading.Thread):
 class GUI:
     def __init__(self, root):
         self.root = root
-        root.title("🦂 S.H.A.U.L.A. v7.0")
+        root.title("🦂 S.H.A.U.L.A. v7.1")
         root.geometry("950x720")
         root.configure(bg="#1a1a2e")
 
-        tk.Label(root, text="🦂  S.H.A.U.L.A. v7.0  🦂",
+        tk.Label(root, text="🦂  S.H.A.U.L.A. v7.1  🦂",
                  font=("Segoe UI", 22, "bold"), bg="#1a1a2e", fg="#ff6b9d").pack(pady=(12, 0))
         tk.Label(root, text="La tua assistente devota, Padrone~!",
                  font=("Segoe UI", 10, "italic"), bg="#1a1a2e", fg="#a0a0c0").pack()
@@ -1963,20 +1889,13 @@ class GUI:
 
         if chess:
             self.scrivi("♟️ Scacchi: ✅ pronti (comando: 'gioca a scacchi')\n")
-        else:
-            self.scrivi("♟️ Scacchi: ❌ libreria 'chess' mancante\n")
-
         try:
             from playwright.sync_api import sync_playwright
             self.scrivi("🌐 Navigazione human-like: ✅ attiva\n")
         except ImportError:
             self.scrivi("🌐 Navigazione: ❌ Playwright non installato\n")
 
-        self.scrivi("\n💡 Comandi scacchi:\n")
-        self.scrivi("   'gioca a scacchi' → partita contro di te\n")
-        self.scrivi("   'gioca a scacchi da sola' → auto-partita\n")
-        self.scrivi("   'livello scacchi maestro' → cambia difficoltà\n")
-        self.scrivi("   'motore scacchi stockfish' → usa Stockfish\n\n")
+        self.scrivi("\n💡 Prova: 'naviga su google e cerca meteo roma'\n\n")
 
         threading.Thread(target=lambda: parla("Shaula è pronta, Padrone~!"), daemon=True).start()
         self.wake = None
