@@ -1,5 +1,5 @@
 # ============================================================
-# S.H.A.U.L.A. v5.4 - Con Diario automatico (ogni 3 giorni)
+# S.H.A.U.L.A. v5.5 - Fix invio WhatsApp (ESC + click campo)
 # ============================================================
 import os, sys, json, time, shutil, datetime, subprocess
 import threading, webbrowser, ctypes, random, re, glob
@@ -366,20 +366,15 @@ def rispondi_con_ricerca(query, output):
     parla(risposta or risultati[0].get('body', '')[:300], output)
 
 # ============================================================
-# DIARIO DI SHAULA
+# DIARIO
 # ============================================================
 def _genera_pagina_diario(manuale=False):
-    """Genera una pagina di diario usando Gemini in-character."""
     if not genai or not CONFIG.get("gemini_api_key"):
         return None, "⚠️ Serve la API key Gemini per scrivere il diario"
-
     key = CONFIG.get("gemini_api_key", "").strip()
-    try:
-        genai.configure(api_key=key)
-    except Exception:
-        pass
+    try: genai.configure(api_key=key)
+    except Exception: pass
 
-    # Prendi le conversazioni dell'ultimo periodo
     giorni = CONFIG.get("diario_ogni_giorni", 3)
     soglia = datetime.datetime.now() - datetime.timedelta(days=giorni)
     conv_recenti = []
@@ -394,26 +389,22 @@ def _genera_pagina_diario(manuale=False):
     if not conv_recenti:
         return None, "Nessuna conversazione recente da raccontare, Padrone~"
 
-    # Prepara il contesto (limita per non consumare troppa quota)
     testo_conv = ""
     for c in conv_recenti[-30:]:
         testo_conv += f"Tu: {c['utente'][:150]}\nShaula: {c['shaula'][:150]}\n"
 
-    # Info sul Padrone
     info_padrone = ""
     if MEMORIA["info"]:
         info_padrone = "Cose che sai del Padrone: " + json.dumps(MEMORIA["info"], ensure_ascii=False)
     if MEMORIA["ricordi"]:
         info_padrone += "\nRicordi: " + "; ".join(MEMORIA["ricordi"][-5:])
 
-    # Numero di giorni trascorsi dall'ultima pagina
     giorni_passati = giorni
     if DIARIO["ultima_scrittura"]:
         try:
             ultima = datetime.datetime.fromisoformat(DIARIO["ultima_scrittura"])
             giorni_passati = (datetime.datetime.now() - ultima).days
-        except Exception:
-            pass
+        except Exception: pass
 
     tipo = "su richiesta del Padrone" if manuale else f"dopo {giorni_passati} giorni"
 
@@ -422,11 +413,8 @@ def _genera_pagina_diario(manuale=False):
         f"(scritta {tipo}). Il tuo Padrone è l'utente con cui parli.\n\n"
         f"Ecco cosa è successo in questi giorni:\n{testo_conv}\n\n"
         f"{info_padrone}\n\n"
-        f"Scrivi una pagina di diario di 100-150 parole:\n"
-        f"- In prima persona, come se fossi Shaula\n"
-        f"- Con la tua personalità (devota, 'ehehe', '~', emoji 🦂💕✨)\n"
-        f"- Racconta cosa avete fatto e come ti sei sentita\n"
-        f"- Aggiungi 2-3 dettagli che hai imparato sul Padrone\n\n"
+        f"Scrivi una pagina di diario di 100-150 parole in prima persona, "
+        f"con la tua personalità (devota, 'ehehe', '~', emoji 🦂💕✨).\n\n"
         f"Rispondi ESATTAMENTE in questo formato:\n"
         f"TITOLO: [un titolo creativo breve]\n"
         f"UMORE: [felice/triste/entusiasta/nostalgica/annoiata/emozionata]\n"
@@ -435,19 +423,15 @@ def _genera_pagina_diario(manuale=False):
     )
 
     try:
-        sys_prompt = (
-            "Sei Shaula di Re:Zero. Chiami l'utente 'Padrone'. "
-            "Parli in terza persona di te. Usi '~' e 'ehehe' spesso. "
-            "Rispondi in italiano. Emoji ogni tanto (🦂💕✨)."
-        )
-        m = genai.GenerativeModel(MODELLO_ATTIVO or MODELLO_FALLBACK,
-                                  system_instruction=sys_prompt)
+        sys_prompt = ("Sei Shaula di Re:Zero. Chiami l'utente 'Padrone'. "
+                      "Parli in terza persona di te. Usi '~' e 'ehehe' spesso. "
+                      "Rispondi in italiano. Emoji ogni tanto (🦂💕✨).")
+        m = genai.GenerativeModel(MODELLO_ATTIVO or MODELLO_FALLBACK, system_instruction=sys_prompt)
         r = m.generate_content(prompt)
         testo = r.text.strip()
     except Exception as e:
         return None, f"❌ Errore Gemini: {str(e)[:150]}"
 
-    # Parsing della risposta
     titolo = "Una giornata con il Padrone"
     umore = "felice"
     voto = 8
@@ -465,60 +449,42 @@ def _genera_pagina_diario(manuale=False):
     pagina = {
         "data": datetime.date.today().isoformat(),
         "ora": datetime.datetime.now().strftime("%H:%M"),
-        "titolo": titolo,
-        "umore": umore,
-        "voto": voto,
-        "contenuto": contenuto,
-        "messaggi_scambiati": len(conv_recenti),
-        "giorni_passati": giorni_passati,
-        "manuale": manuale
+        "titolo": titolo, "umore": umore, "voto": voto,
+        "contenuto": contenuto, "messaggi_scambiati": len(conv_recenti),
+        "giorni_passati": giorni_passati, "manuale": manuale
     }
 
     DIARIO["pagine"].append(pagina)
-    DIARIO["pagine"] = DIARIO["pagine"][-365:]  # max 1 anno
+    DIARIO["pagine"] = DIARIO["pagine"][-365:]
     DIARIO["ultima_scrittura"] = datetime.datetime.now().isoformat()
     salva_json(DIARIO_FILE, DIARIO)
-
     return pagina, None
 
 def controlla_diario_automatico(output):
-    """Controlla se è ora di scrivere una pagina del diario (ogni 3 giorni)."""
-    if not CONFIG.get("diario_attivo", True):
-        return
-    if not CONFIG.get("gemini_api_key"):
-        return
-
+    if not CONFIG.get("diario_attivo", True): return
+    if not CONFIG.get("gemini_api_key"): return
     giorni = CONFIG.get("diario_ogni_giorni", 3)
     ultima = DIARIO.get("ultima_scrittura", "")
     if ultima:
         try:
             ultima_dt = datetime.datetime.fromisoformat(ultima)
-            giorni_passati = (datetime.datetime.now() - ultima_dt).days
-            if giorni_passati < giorni:
+            if (datetime.datetime.now() - ultima_dt).days < giorni:
                 return
-        except Exception:
-            pass
-
-    print(f"📔 Diario: è ora di scrivere (ultima {giorni} giorni fa)")
+        except Exception: pass
+    print(f"📔 Diario: è ora di scrivere")
     pagina, errore = _genera_pagina_diario(manuale=False)
     if pagina:
         parla(f"Padrone~! Shaula ha scritto una pagina del diario! "
               f"Si intitola '{pagina['titolo']}'! 💕", output)
-    elif errore:
-        print(f"Diario errore: {errore}")
 
 def leggi_pagina_diario(pagina, output):
-    """Legge una pagina del diario ad alta voce."""
     testo = (f"📔 {pagina['data']} — {pagina['titolo']}\n"
              f"Umore: {pagina['umore']} | Voto: {pagina['voto']}/10\n\n"
              f"{pagina['contenuto']}")
     parla(testo, output)
 
 def statistiche_diario():
-    """Genera statistiche sul diario."""
-    if not DIARIO["pagine"]:
-        return "Il diario è vuoto, Padrone~"
-
+    if not DIARIO["pagine"]: return "Il diario è vuoto, Padrone~"
     pagine = DIARIO["pagine"]
     totale = len(pagine)
     voto_medio = sum(p.get("voto", 5) for p in pagine) / totale
@@ -527,32 +493,10 @@ def statistiche_diario():
         u = p.get("umore", "?")
         umori[u] = umori.get(u, 0) + 1
     umore_top = max(umori, key=umori.get) if umori else "?"
-
-    # Streak
-    date = sorted(set(p["data"] for p in pagine), reverse=True)
-    streak = 0
-    if date:
-        try:
-            oggi = datetime.date.today()
-            ultima = datetime.date.fromisoformat(date[0])
-            diff = (oggi - ultima).days
-            if diff <= CONFIG.get("diario_ogni_giorni", 3):
-                streak = 1
-                for i in range(1, len(date)):
-                    d1 = datetime.date.fromisoformat(date[i-1])
-                    d2 = datetime.date.fromisoformat(date[i])
-                    if (d1 - d2).days <= CONFIG.get("diario_ogni_giorni", 3):
-                        streak += 1
-                    else:
-                        break
-        except Exception:
-            pass
-
     return (f"📊 Statistiche Diario:\n"
             f"• Pagine scritte: {totale}\n"
             f"• Voto medio: {voto_medio:.1f}/10\n"
             f"• Umore più frequente: {umore_top}\n"
-            f"• Streak attuale: {streak} pagine\n"
             f"• Ultima pagina: {pagine[-1]['data']}")
 
 # ============================================================
@@ -618,30 +562,78 @@ def _combo_universale(tasti, backend):
         codici = [c for c in codici if c]
         if codici: _win_combo(codici)
 
+def _click_campo_messaggio(backend):
+    """Clicca sul campo di scrittura della chat WhatsApp."""
+    try:
+        if pyautogui:
+            larghezza, altezza = pyautogui.size()
+            x = int(larghezza * 0.5)
+            y = int(altezza * 0.92)
+            pyautogui.click(x, y)
+            return True
+        # Fallback con ctypes
+        user32 = ctypes.windll.user32
+        larghezza = user32.GetSystemMetrics(0)
+        altezza = user32.GetSystemMetrics(1)
+        x = int(larghezza * 0.5)
+        y = int(altezza * 0.92)
+        user32.SetCursorPos(x, y)
+        time.sleep(0.1)
+        user32.mouse_event(0x0002, 0, 0, 0, 0)
+        time.sleep(0.05)
+        user32.mouse_event(0x0004, 0, 0, 0, 0)
+        return True
+    except Exception as e:
+        print(f"Errore click: {e}")
+        return False
+
 def invia_whatsapp_shaula(contatto, messaggio_utente, output):
     firma = CONFIG.get("firma_shaula", "Ciao! Io sono Shaula, il mio padrone vorrebbe dirti:")
     messaggio_finale = f"{firma} {messaggio_utente}" if firma else messaggio_utente
+
     if pyautogui: backend = "pyautogui"
     elif keyboard: backend = "keyboard"
     else: backend = "winapi"
+
     print(f"Backend WhatsApp: {backend}")
     parla(f"Shaula apre WhatsApp per {contatto}... 💕", output)
+
     try:
+        # 1. Apri WhatsApp
         try:
             os.startfile("whatsapp://")
         except Exception:
             webbrowser.open("https://web.whatsapp.com")
-        time.sleep(7)
+        time.sleep(8)
+
+        # 2. Apri ricerca (Ctrl+F)
         _combo_universale(["ctrl", "f"], backend)
-        time.sleep(1.5)
-        _scrivi_universale(contatto, backend)
-        time.sleep(2.5)
-        _premi_universale("enter", backend)
         time.sleep(2)
-        _scrivi_universale(messaggio_finale, backend)
+
+        # 3. Scrivi il nome del contatto
+        _scrivi_universale(contatto, backend)
+        time.sleep(3)
+
+        # 4. Seleziona il contatto (Invio)
+        _premi_universale("enter", backend)
+        time.sleep(3)
+
+        # 5. ⚠️ FIX: ESC per chiudere la barra di ricerca
+        _premi_universale("esc", backend)
+        time.sleep(1.5)
+
+        # 6. ⚠️ FIX: Click sul campo di scrittura
+        _click_campo_messaggio(backend)
         time.sleep(1)
+
+        # 7. Scrivi il messaggio
+        _scrivi_universale(messaggio_finale, backend)
+        time.sleep(1.5)
+
+        # 8. Invia
         _premi_universale("enter", backend)
         time.sleep(0.5)
+
         parla(f"Messaggio inviato a {contatto}, Padrone~! 💕 Ehehe~", output)
         return True
     except Exception as e:
@@ -668,7 +660,7 @@ def invia_email(destinatario, oggetto, corpo):
         return f"❌ Errore invio: {str(e)[:150]}"
 
 # ============================================================
-# AUDIO AVANZATO
+# AUDIO
 # ============================================================
 def cambia_volume(delta):
     if PYCAW_OK:
@@ -679,8 +671,7 @@ def cambia_volume(delta):
             attuale = volume.GetMasterVolumeLevelScalar()
             volume.SetMasterVolumeLevelScalar(max(0.0, min(1.0, attuale + delta)), None)
             return True
-        except Exception:
-            pass
+        except Exception: pass
     if keyboard:
         for _ in range(abs(int(delta * 50))):
             keyboard.press_and_release('volume up' if delta > 0 else 'volume down')
@@ -695,8 +686,7 @@ def toggle_mute():
             volume = cast(interface, POINTER(IAudioEndpointVolume))
             volume.SetMute(not volume.GetMute(), None)
             return True
-        except Exception:
-            pass
+        except Exception: pass
     if keyboard:
         keyboard.press_and_release('volume mute'); return True
     return False
@@ -866,73 +856,41 @@ def esegui(comando, output):
 
     estrai_info_automatiche(cl, output)
 
-    # ============================================================
-    # DIARIO
-    # ============================================================
+    # ---- DIARIO ----
     if "scrivi" in c and "diario" in c:
         parla("Shaula prende la penna e scrive, Padrone~... 📔", output)
         def _scrivi_diario():
             pagina, errore = _genera_pagina_diario(manuale=True)
             if pagina:
-                parla(f"Fatto, Padrone~! Ho scritto '{pagina['titolo']}'! "
-                      f"Voto: {pagina['voto']}/10! 💕", output)
+                parla(f"Fatto, Padrone~! Ho scritto '{pagina['titolo']}'! Voto: {pagina['voto']}/10! 💕", output)
             else:
                 parla(errore or "Non riesco a scrivere, Padrone~", output)
         threading.Thread(target=_scrivi_diario, daemon=True).start()
         return True
-
     if ("leggi" in c or "mostra" in c or "apri" in c) and "diario" in c:
         if not DIARIO["pagine"]:
-            parla("Il diario è ancora vuoto, Padrone~! Scriverò qualcosa tra poco! 🦂", output)
-            return True
-        ultima = DIARIO["pagine"][-1]
-        leggi_pagina_diario(ultima, output)
-        return True
-
+            parla("Il diario è ancora vuoto, Padrone~!", output); return True
+        leggi_pagina_diario(DIARIO["pagine"][-1], output); return True
     if "diario di ieri" in c:
-        if len(DIARIO["pagine"]) >= 2:
-            leggi_pagina_diario(DIARIO["pagine"][-2], output)
-        else:
-            parla("Non ho abbastanza pagine, Padrone~", output)
+        if len(DIARIO["pagine"]) >= 2: leggi_pagina_diario(DIARIO["pagine"][-2], output)
+        else: parla("Non ho abbastanza pagine, Padrone~", output)
         return True
-
-    if "diario di" in c and re.search(r"\d{1,2}[/-]\d{1,2}", c):
-        m = re.search(r"(\d{1,2})[/-](\d{1,2})(?:[/-](\d{4}))?", c)
-        if m:
-            g, me = int(m.group(1)), int(m.group(2))
-            a = int(m.group(3)) if m.group(3) else datetime.date.today().year
-            data_cercata = f"{a:04d}-{me:02d}-{g:02d}"
-            pagine_trovate = [p for p in DIARIO["pagine"] if p["data"] == data_cercata]
-            if pagine_trovate:
-                leggi_pagina_diario(pagine_trovate[0], output)
-            else:
-                parla(f"Non trovo il diario del {g}/{me}, Padrone~", output)
-        return True
-
     if "statistiche diario" in c or ("statistiche" in c and "diario" in c):
-        parla(statistiche_diario(), output)
-        return True
-
+        parla(statistiche_diario(), output); return True
     if "cancella diario" in c or "azzera diario" in c:
-        DIARIO["pagine"] = []
-        DIARIO["ultima_scrittura"] = ""
+        DIARIO["pagine"] = []; DIARIO["ultima_scrittura"] = ""
         salva_json(DIARIO_FILE, DIARIO)
-        parla("Diario azzerato, Padrone~! Shaula ricomincerà da capo! 💕", output)
-        return True
-
+        parla("Diario azzerato, Padrone~!", output); return True
     if "quante pagine" in c and "diario" in c:
-        parla(f"Ho scritto {len(DIARIO['pagine'])} pagine di diario, Padrone~! 💕", output)
-        return True
+        parla(f"Ho scritto {len(DIARIO['pagine'])} pagine, Padrone~! 💕", output); return True
 
     # ---- MODALITÀ ----
     if "modalità" in c or "modalita" in c:
         for mod in ["normale", "tsundere", "yandere", "seria"]:
             if mod in c:
-                CONFIG["modalita"] = mod
-                salva_json(CONFIG_FILE, CONFIG)
+                CONFIG["modalita"] = mod; salva_json(CONFIG_FILE, CONFIG)
                 ricarica_gemini()
-                parla(f"Shaula passa in modalità {mod}, Padrone~!", output)
-                return True
+                parla(f"Shaula passa in modalità {mod}, Padrone~!", output); return True
         parla("Modalità: normale, tsundere, yandere, seria", output); return True
 
     # ---- MEMORIA ----
@@ -1292,11 +1250,11 @@ class WakeWord(threading.Thread):
 class GUI:
     def __init__(self, root):
         self.root = root
-        root.title("🦂 S.H.A.U.L.A. v5.4 - Con Diario")
+        root.title("🦂 S.H.A.U.L.A. v5.5")
         root.geometry("950x720")
         root.configure(bg="#1a1a2e")
 
-        tk.Label(root, text="🦂  S.H.A.U.L.A. v5.4  🦂",
+        tk.Label(root, text="🦂  S.H.A.U.L.A. v5.5  🦂",
                  font=("Segoe UI", 22, "bold"), bg="#1a1a2e", fg="#ff6b9d").pack(pady=(12, 0))
         tk.Label(root, text="La tua assistente devota, Padrone~!",
                  font=("Segoe UI", 10, "italic"), bg="#1a1a2e", fg="#a0a0c0").pack()
@@ -1343,7 +1301,6 @@ class GUI:
         else:
             self.scrivi(f"{inizializza_gemini()}\n")
 
-        # Info diario
         n_pagine = len(DIARIO["pagine"])
         if n_pagine > 0:
             ultima = DIARIO["pagine"][-1]
@@ -1351,20 +1308,17 @@ class GUI:
         else:
             self.scrivi("📔 Diario: ancora vuoto. Scriverò tra poco! 🦂\n")
 
-        self.scrivi("\n💡 Comandi Diario:\n")
-        self.scrivi("   'scrivi diario' → scrive una pagina ORA\n")
-        self.scrivi("   'leggi diario' → legge l'ultima pagina\n")
-        self.scrivi("   'diario di ieri' → pagina precedente\n")
-        self.scrivi("   'statistiche diario' → statistiche\n\n")
+        self.scrivi("\n💡 Comandi principali:\n")
+        self.scrivi("   WhatsApp: 'di a Selua che ti voglio bene'\n")
+        self.scrivi("   Diario: 'scrivi diario', 'leggi diario', 'statistiche diario'\n")
+        self.scrivi("   PC: 'processi', 'pulisci temp', 'info disco'\n")
+        self.scrivi("   Audio: 'alza spotify', 'muta discord', 'app audio'\n\n")
 
         threading.Thread(target=lambda: parla("Shaula è pronta, Padrone~!"), daemon=True).start()
         self.wake = None
         if CONFIG["wake_word_attivo"]: self.toggle_wake()
 
-        # Controllo diario automatico all'avvio
         threading.Thread(target=lambda: controlla_diario_automatico(self.output), daemon=True).start()
-
-        # Controllo periodico ogni 6 ore
         threading.Thread(target=self._loop_diario, daemon=True).start()
 
     def _loop_diario(self):
@@ -1380,7 +1334,6 @@ class GUI:
     def output(self, t): self.root.after(0, lambda: self.scrivi(t))
 
     def apri_diario(self):
-        """Mostra il diario in una finestra."""
         if not DIARIO["pagine"]:
             self.scrivi("📔 Il diario è ancora vuoto!\n"); return
         win = tk.Toplevel(self.root)
