@@ -1,5 +1,5 @@
 # ============================================================
-# S.H.A.U.L.A. v5.5 - Fix invio WhatsApp (ESC + click campo)
+# S.H.A.U.L.A. v6.0 - Navigazione autonoma con Playwright
 # ============================================================
 import os, sys, json, time, shutil, datetime, subprocess
 import threading, webbrowser, ctypes, random, re, glob
@@ -61,6 +61,7 @@ PLUGIN_FILE = os.path.join(BASE_DIR, "plugins.py")
 NOTE_FILE = os.path.join(BASE_DIR, "note.json")
 AGENDA_FILE = os.path.join(BASE_DIR, "agenda.json")
 DIARIO_FILE = os.path.join(BASE_DIR, "diario.json")
+CHROME_PROFILE_DIR = os.path.join(BASE_DIR, "_chrome_profile")
 
 def carica_json(p, default):
     if os.path.exists(p):
@@ -96,7 +97,8 @@ CONFIG = carica_json(CONFIG_FILE, {
     "gmail_password": "",
     "firma_shaula": "Ciao! Io sono Shaula, il mio padrone vorrebbe dirti:",
     "diario_attivo": True,
-    "diario_ogni_giorni": 3
+    "diario_ogni_giorni": 3,
+    "navigazione_attiva": True
 })
 MEMORIA = carica_json(MEMORIA_FILE, {"ricordi": [], "preferenze": {}, "info": {}})
 STORICO = carica_json(STORICO_FILE, {"conversazioni": []})
@@ -149,7 +151,7 @@ VERBI_COMANDO = [
     "screenshot", "converti", "traduci", "riassumi", "ricorda", "dimentica",
     "modalità", "modalita", "processi", "pulisci", "email", "mail", "agenda",
     "evento", "nota", "lista", "whatsapp", "dì", "di", "dici", "manda", "invia",
-    "messaggio", "diario"
+    "messaggio", "diario", "naviga", "estrai"
 ]
 
 def sembra_comando(testo):
@@ -366,6 +368,201 @@ def rispondi_con_ricerca(query, output):
     parla(risposta or risultati[0].get('body', '')[:300], output)
 
 # ============================================================
+# NAVIGAZIONE AUTONOMA CON PLAYWRIGHT
+# ============================================================
+def _rileva_captcha(page):
+    """Rileva se c'è un CAPTCHA sulla pagina."""
+    try:
+        html = page.content().lower()
+        indicatori = ["recaptcha", "hcaptcha", "cf-turnstile",
+                      "challenge-platform", "g-recaptcha", "captcha",
+                      "verify you are human", "verifica che sei umano"]
+        return any(ind in html for ind in indicatori)
+    except Exception:
+        return False
+
+def _attendi_risoluzione_captcha(page, output, timeout=120):
+    """Aspetta che l'utente risolva il CAPTCHA manualmente."""
+    try:
+        img_path = os.path.join(BASE_DIR, "_captcha.png")
+        page.screenshot(path=img_path)
+        parla(f"⚠️ Padrone~! C'è un CAPTCHA! Guarda la finestra di Chrome, "
+              f"clicca 'Non sono un robot', poi aspetta. Shaula riprende da sola! 🦂", output)
+    except Exception:
+        parla("⚠️ CAPTCHA rilevato! Risolvilo nella finestra Chrome, Padrone~!", output)
+
+    for _ in range(timeout):
+        time.sleep(1)
+        if not _rileva_captcha(page):
+            parla("✅ CAPTCHA risolto! Continuo, Padrone~!", output)
+            return True
+    parla("⏰ Tempo scaduto, Padrone~! Chiudo il browser.", output)
+    return False
+
+def naviga_autonomo(azione, output):
+    """Naviga in autonomia usando Playwright con Chrome reale + stealth."""
+    if not CONFIG.get("navigazione_attiva", True):
+        parla("La navigazione è disattivata, Padrone~!", output)
+        return False
+
+    if not genai or not CONFIG.get("gemini_api_key"):
+        parla("⚠️ Serve la API key Gemini, Padrone~", output)
+        return False
+
+    parla(f"Shaula naviga: '{azione}'... 🌐", output)
+
+    # 1. Genera il piano con Gemini
+    try:
+        key = CONFIG["gemini_api_key"].strip()
+        genai.configure(api_key=key)
+        m = genai.GenerativeModel(MODELLO_ATTIVO or MODELLO_FALLBACK)
+
+        prompt = f"""Sei un generatore di codice Playwright Python.
+L'utente vuole: "{azione}"
+
+Genera SOLO il codice Python (nessun commento, nessun markdown) che:
+- Usa la variabile `page` già disponibile (browser Playwright già aperto)
+- Compie l'azione passo passo
+- Usa selettori robusti (testo visibile, role, placeholder)
+- Aspetta il caricamento con page.wait_for_timeout(1500) tra le azioni
+- Massimo 15 righe di codice
+- Alla fine, salva una variabile `result` con un riassunto testuale (max 200 caratteri)
+
+REGOLE:
+- Solo codice Python valido
+- Niente markdown, niente ```python, niente spiegazioni
+- Inizia direttamente con page.xxx
+"""
+        r = m.generate_content(prompt)
+        codice = r.text.strip()
+        codice = re.sub(r"^```python\s*", "", codice)
+        codice = re.sub(r"^```\s*", "", codice)
+        codice = re.sub(r"\s*```$", "", codice)
+        codice = codice.strip()
+        print(f"Codice navigazione:\n{codice}")
+    except Exception as e:
+        parla(f"❌ Errore generazione piano: {str(e)[:150]}", output)
+        return False
+
+    # 2. Esegui in un thread
+    def _esegui():
+        try:
+            from playwright.sync_api import sync_playwright
+            with sync_playwright() as p:
+                browser = None
+                # Prova prima con Chrome reale (stealth)
+                try:
+                    browser = p.chromium.launch_persistent_context(
+                        user_data_dir=CHROME_PROFILE_DIR,
+                        headless=False,
+                        channel="chrome",
+                        args=[
+                            "--disable-blink-features=AutomationControlled",
+                            "--disable-infobars",
+                            "--no-default-browser-check",
+                            "--no-first-run",
+                        ],
+                        locale="it-IT",
+                        timezone_id="Europe/Rome",
+                    )
+                    page = browser.pages[0] if browser.pages else browser.new_page()
+                except Exception as e:
+                    print(f"Chrome reale non trovato, uso Chromium: {e}")
+                    browser = p.chromium.launch(
+                        headless=False,
+                        args=["--disable-blink-features=AutomationControlled"]
+                    )
+                    page = browser.new_page()
+
+                # Stealth: rimuovi tracce di automazione
+                try:
+                    page.add_init_script("""
+                        Object.defineProperty(navigator, 'webdriver', {
+                            get: () => undefined
+                        });
+                        window.chrome = { runtime: {} };
+                        Object.defineProperty(navigator, 'plugins', {
+                            get: () => [1, 2, 3, 4, 5]
+                        });
+                        Object.defineProperty(navigator, 'languages', {
+                            get: () => ['it-IT', 'it', 'en-US', 'en']
+                        });
+                    """)
+                except Exception:
+                    pass
+
+                page.set_extra_http_headers({
+                    "Accept-Language": "it-IT,it;q=0.9,en;q=0.8"
+                })
+
+                # Esegui il codice generato
+                namespace = {"page": page, "result": None, "time": time}
+                try:
+                    exec(codice, namespace)
+                except Exception as e:
+                    print(f"Errore esecuzione: {e}")
+                    parla(f"❌ Errore durante la navigazione: {str(e)[:150]}", output)
+                    try: browser.close()
+                    except: pass
+                    return
+
+                # Rileva CAPTCHA
+                if _rileva_captcha(page):
+                    if not _attendi_risoluzione_captcha(page, output):
+                        try: browser.close()
+                        except: pass
+                        return
+
+                # Riporta risultato
+                risultato = namespace.get("result") or "Azione completata"
+                parla(f"✅ {risultato}, Padrone~!", output)
+
+                # Lascia il browser aperto 12 secondi per vedere il risultato
+                parla("Shaula lascia il browser aperto 12 secondi, Padrone~!", output)
+                time.sleep(12)
+
+                try: browser.close()
+                except: pass
+
+        except ImportError:
+            parla("❌ Playwright non installato, Padrone~! Ricompila con requirements aggiornato.", output)
+        except Exception as e:
+            parla(f"❌ Errore navigazione: {str(e)[:150]}", output)
+
+    threading.Thread(target=_esegui, daemon=True).start()
+    return True
+
+def estrai_da_sito(url, cosa_estrarre, output):
+    """Estrae dati da un sito."""
+    azione = f"vai su {url}, {cosa_estrarre}, poi metti in result cosa hai trovato"
+    return naviga_autonomo(azione, output)
+
+def screenshot_sito(url, output):
+    """Screenshot di un sito (headless, veloce)."""
+    def _thread():
+        try:
+            from playwright.sync_api import sync_playwright
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                page = browser.new_page(viewport={"width": 1920, "height": 1080})
+                page.goto(url, timeout=30000)
+                page.wait_for_timeout(2500)
+
+                n = f"sito_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+                percorso = os.path.join(desktop(), n)
+                page.screenshot(path=percorso, full_page=True)
+
+                browser.close()
+                parla(f"✅ Screenshot salvato: {n}", output)
+        except ImportError:
+            parla("❌ Playwright non installato, Padrone~", output)
+        except Exception as e:
+            parla(f"❌ Errore: {str(e)[:150]}", output)
+
+    threading.Thread(target=_thread, daemon=True).start()
+    return True
+
+# ============================================================
 # DIARIO
 # ============================================================
 def _genera_pagina_diario(manuale=False):
@@ -500,7 +697,7 @@ def statistiche_diario():
             f"• Ultima pagina: {pagine[-1]['data']}")
 
 # ============================================================
-# WHATSAPP AUTO-SEND
+# WHATSAPP
 # ============================================================
 VK_CODES = {
     'enter': 0x0D, 'tab': 0x09, 'esc': 0x1B, 'escape': 0x1B,
@@ -513,128 +710,83 @@ VK_CODES = {
 }
 KEYEVENTF_KEYUP = 0x0002
 
-def _win_key_down(vk_code): ctypes.windll.user32.keybd_event(vk_code, 0, 0, 0)
-def _win_key_up(vk_code): ctypes.windll.user32.keybd_event(vk_code, 0, KEYEVENTF_KEYUP, 0)
-def _win_press(vk_code):
-    _win_key_down(vk_code); time.sleep(0.03); _win_key_up(vk_code)
+def _win_key_down(vk): ctypes.windll.user32.keybd_event(vk, 0, 0, 0)
+def _win_key_up(vk): ctypes.windll.user32.keybd_event(vk, 0, KEYEVENTF_KEYUP, 0)
+def _win_press(vk):
+    _win_key_down(vk); time.sleep(0.03); _win_key_up(vk)
 
-def _win_combo(vk_codes):
-    for code in vk_codes:
-        _win_key_down(code); time.sleep(0.02)
+def _win_combo(vks):
+    for vk in vks: _win_key_down(vk); time.sleep(0.02)
     time.sleep(0.05)
-    for code in reversed(vk_codes):
-        _win_key_up(code); time.sleep(0.02)
+    for vk in reversed(vks): _win_key_up(vk); time.sleep(0.02)
 
 def _win_copy_to_clipboard(testo):
     try:
         r = tk.Tk(); r.withdraw()
         r.clipboard_clear(); r.clipboard_append(testo); r.update(); r.destroy()
         return True
-    except Exception:
-        return False
+    except Exception: return False
 
 def _scrivi_universale(testo, backend):
-    if backend == "pyautogui":
-        pyautogui.write(testo, interval=0.03)
-    elif backend == "keyboard":
-        keyboard.write(testo, delay=0.02)
+    if backend == "pyautogui": pyautogui.write(testo, interval=0.03)
+    elif backend == "keyboard": keyboard.write(testo, delay=0.02)
     else:
         _win_copy_to_clipboard(testo)
         time.sleep(0.3)
         _win_combo([VK_CODES['ctrl'], VK_CODES['v']])
 
 def _premi_universale(tasto, backend):
-    if backend == "pyautogui":
-        pyautogui.press(tasto)
-    elif backend == "keyboard":
-        keyboard.press_and_release(tasto)
+    if backend == "pyautogui": pyautogui.press(tasto)
+    elif backend == "keyboard": keyboard.press_and_release(tasto)
     else:
         vk = VK_CODES.get(tasto.lower())
         if vk: _win_press(vk)
 
 def _combo_universale(tasti, backend):
-    if backend == "pyautogui":
-        pyautogui.hotkey(*tasti)
-    elif backend == "keyboard":
-        keyboard.press_and_release("+".join(tasti))
+    if backend == "pyautogui": pyautogui.hotkey(*tasti)
+    elif backend == "keyboard": keyboard.press_and_release("+".join(tasti))
     else:
-        codici = [VK_CODES.get(t.lower()) for t in tasti]
-        codici = [c for c in codici if c]
-        if codici: _win_combo(codici)
+        vks = [VK_CODES.get(t.lower()) for t in tasti]
+        vks = [v for v in vks if v]
+        if vks: _win_combo(vks)
 
 def _click_campo_messaggio(backend):
-    """Clicca sul campo di scrittura della chat WhatsApp."""
     try:
         if pyautogui:
-            larghezza, altezza = pyautogui.size()
-            x = int(larghezza * 0.5)
-            y = int(altezza * 0.92)
-            pyautogui.click(x, y)
+            w, h = pyautogui.size()
+            pyautogui.click(int(w * 0.5), int(h * 0.92))
             return True
-        # Fallback con ctypes
         user32 = ctypes.windll.user32
-        larghezza = user32.GetSystemMetrics(0)
-        altezza = user32.GetSystemMetrics(1)
-        x = int(larghezza * 0.5)
-        y = int(altezza * 0.92)
+        w = user32.GetSystemMetrics(0); h = user32.GetSystemMetrics(1)
+        x = int(w * 0.5); y = int(h * 0.92)
         user32.SetCursorPos(x, y)
         time.sleep(0.1)
         user32.mouse_event(0x0002, 0, 0, 0, 0)
         time.sleep(0.05)
         user32.mouse_event(0x0004, 0, 0, 0, 0)
         return True
-    except Exception as e:
-        print(f"Errore click: {e}")
-        return False
+    except Exception: return False
 
 def invia_whatsapp_shaula(contatto, messaggio_utente, output):
     firma = CONFIG.get("firma_shaula", "Ciao! Io sono Shaula, il mio padrone vorrebbe dirti:")
     messaggio_finale = f"{firma} {messaggio_utente}" if firma else messaggio_utente
-
     if pyautogui: backend = "pyautogui"
     elif keyboard: backend = "keyboard"
     else: backend = "winapi"
-
     print(f"Backend WhatsApp: {backend}")
     parla(f"Shaula apre WhatsApp per {contatto}... 💕", output)
-
     try:
-        # 1. Apri WhatsApp
-        try:
-            os.startfile("whatsapp://")
-        except Exception:
-            webbrowser.open("https://web.whatsapp.com")
+        try: os.startfile("whatsapp://")
+        except Exception: webbrowser.open("https://web.whatsapp.com")
         time.sleep(8)
-
-        # 2. Apri ricerca (Ctrl+F)
-        _combo_universale(["ctrl", "f"], backend)
-        time.sleep(2)
-
-        # 3. Scrivi il nome del contatto
-        _scrivi_universale(contatto, backend)
-        time.sleep(3)
-
-        # 4. Seleziona il contatto (Invio)
-        _premi_universale("enter", backend)
-        time.sleep(3)
-
-        # 5. ⚠️ FIX: ESC per chiudere la barra di ricerca
-        _premi_universale("esc", backend)
-        time.sleep(1.5)
-
-        # 6. ⚠️ FIX: Click sul campo di scrittura
-        _click_campo_messaggio(backend)
-        time.sleep(1)
-
-        # 7. Scrivi il messaggio
-        _scrivi_universale(messaggio_finale, backend)
-        time.sleep(1.5)
-
-        # 8. Invia
-        _premi_universale("enter", backend)
-        time.sleep(0.5)
-
-        parla(f"Messaggio inviato a {contatto}, Padrone~! 💕 Ehehe~", output)
+        _combo_universale(["ctrl", "f"], backend); time.sleep(2)
+        _scrivi_universale(contatto, backend); time.sleep(3)
+        _premi_universale("enter", backend); time.sleep(3)
+        _premi_universale("esc", backend); time.sleep(1.5)
+        _click_campo_messaggio(backend); time.sleep(1)
+        _scrivi_universale(messaggio_finale, backend); time.sleep(1.5)
+        _premi_universale("enter", backend); time.sleep(0.5)
+        parla(f"Messaggio inviato a {contatto}, Padrone~! 💕", output)
         return True
     except Exception as e:
         parla(f"❌ Errore WhatsApp: {str(e)[:150]}", output)
@@ -646,8 +798,7 @@ def invia_whatsapp_shaula(contatto, messaggio_utente, output):
 def invia_email(destinatario, oggetto, corpo):
     user = CONFIG.get("gmail_user", "").strip()
     pwd = CONFIG.get("gmail_password", "").strip()
-    if not user or not pwd:
-        return "⚠️ Configura Gmail (pulsante 📧)"
+    if not user or not pwd: return "⚠️ Configura Gmail (pulsante 📧)"
     try:
         msg = MIMEMultipart()
         msg['From'] = user; msg['To'] = destinatario; msg['Subject'] = oggetto
@@ -687,8 +838,7 @@ def toggle_mute():
             volume.SetMute(not volume.GetMute(), None)
             return True
         except Exception: pass
-    if keyboard:
-        keyboard.press_and_release('volume mute'); return True
+    if keyboard: keyboard.press_and_release('volume mute'); return True
     return False
 
 def cambia_volume_app(nome_app, delta):
@@ -714,8 +864,7 @@ def muta_app(nome_app):
 
 def lista_app_audio():
     if not PYCAW_OK: return []
-    try:
-        return list(set(s.Process.name() for s in AudioUtilities.GetAllSessions() if s.Process))
+    try: return list(set(s.Process.name() for s in AudioUtilities.GetAllSessions() if s.Process))
     except Exception: return []
 
 def media_key(tasto):
@@ -727,11 +876,11 @@ def media_key(tasto):
 # ============================================================
 # PROCESSI
 # ============================================================
-def lista_processi(ordinati_per="ram", limite=10):
+def lista_processi(ordine="ram", limite=10):
     if not psutil: return "psutil non disponibile"
     try:
         procs = list(psutil.process_iter(['pid', 'name', 'memory_percent', 'cpu_percent']))
-        if ordinati_per == "ram":
+        if ordine == "ram":
             procs.sort(key=lambda x: x.info.get('memory_percent', 0) or 0, reverse=True)
         else:
             procs.sort(key=lambda x: x.info.get('cpu_percent', 0) or 0, reverse=True)
@@ -770,29 +919,22 @@ def info_disco_dettagliato():
     except Exception: return "Errore"
 
 def modalita_risparmio():
-    try:
-        subprocess.run("powercfg /setactive a1841308-3541-4fab-bc81-f71556f20b4a", shell=True, capture_output=True)
-        return True
+    try: subprocess.run("powercfg /setactive a1841308-3541-4fab-bc81-f71556f20b4a", shell=True, capture_output=True); return True
     except Exception: return False
 
 def modalita_prestazioni():
-    try:
-        subprocess.run("powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c", shell=True, capture_output=True)
-        return True
+    try: subprocess.run("powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c", shell=True, capture_output=True); return True
     except Exception: return False
 
 def modalita_bilanciata():
-    try:
-        subprocess.run("powercfg /setactive 381b4222-f694-41f0-9685-ff5bb260df2e", shell=True, capture_output=True)
-        return True
+    try: subprocess.run("powercfg /setactive 381b4222-f694-41f0-9685-ff5bb260df2e", shell=True, capture_output=True); return True
     except Exception: return False
 
 # ============================================================
 # AGENDA E NOTE
 # ============================================================
 def aggiungi_evento(titolo, quando):
-    AGENDA["eventi"].append({"titolo": titolo, "quando": quando,
-                             "creato": datetime.datetime.now().isoformat()})
+    AGENDA["eventi"].append({"titolo": titolo, "quando": quando, "creato": datetime.datetime.now().isoformat()})
     salva_json(AGENDA_FILE, AGENDA); return True
 
 def eventi_oggi():
@@ -856,16 +998,51 @@ def esegui(comando, output):
 
     estrai_info_automatiche(cl, output)
 
-    # ---- DIARIO ----
+    # ============================================================
+    # NAVIGAZIONE AUTONOMA
+    # ============================================================
+    # "naviga su google e cerca meteo roma"
+    m = re.search(r"^naviga su\s+(.+?)\s+e\s+(.+)$", cl, re.IGNORECASE)
+    if m:
+        sito = m.group(1).strip()
+        resto = m.group(2).strip()
+        threading.Thread(target=naviga_autonomo, args=(f"vai su {sito} e {resto}", output), daemon=True).start()
+        return True
+
+    # "naviga https://... e ..."
+    m = re.search(r"^naviga\s+(https?://[^\s]+)\s+e\s+(.+)$", cl, re.IGNORECASE)
+    if m:
+        url = m.group(1).strip()
+        resto = m.group(2).strip()
+        threading.Thread(target=naviga_autonomo, args=(f"vai su {url} e {resto}", output), daemon=True).start()
+        return True
+
+    # "estrai [cosa] da [URL]"
+    m = re.search(r"^estrai\s+(.+?)\s+da\s+(https?://[^\s]+)$", cl, re.IGNORECASE)
+    if m:
+        cosa = m.group(1).strip()
+        url = m.group(2).strip()
+        threading.Thread(target=estrai_da_sito, args=(url, cosa, output), daemon=True).start()
+        return True
+
+    # "screenshot di [URL]"
+    m = re.search(r"^screenshot (?:di|del sito)\s+(https?://[^\s]+)$", cl, re.IGNORECASE)
+    if m:
+        screenshot_sito(m.group(1).strip(), output)
+        return True
+
+    # ============================================================
+    # DIARIO
+    # ============================================================
     if "scrivi" in c and "diario" in c:
         parla("Shaula prende la penna e scrive, Padrone~... 📔", output)
-        def _scrivi_diario():
+        def _s():
             pagina, errore = _genera_pagina_diario(manuale=True)
             if pagina:
                 parla(f"Fatto, Padrone~! Ho scritto '{pagina['titolo']}'! Voto: {pagina['voto']}/10! 💕", output)
             else:
                 parla(errore or "Non riesco a scrivere, Padrone~", output)
-        threading.Thread(target=_scrivi_diario, daemon=True).start()
+        threading.Thread(target=_s, daemon=True).start()
         return True
     if ("leggi" in c or "mostra" in c or "apri" in c) and "diario" in c:
         if not DIARIO["pagine"]:
@@ -1091,7 +1268,7 @@ def esegui(comando, output):
     if "svegliami" in c: parla("A che ora? 'svegliami alle 7:30'", output); return True
 
     # ---- SCHERMO ----
-    if "screenshot" in c:
+    if "screenshot" in c and "http" not in c:
         if PIL_ImageGrab:
             n = f"screenshot_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
             PIL_ImageGrab.grab().save(os.path.join(desktop(), n))
@@ -1250,11 +1427,11 @@ class WakeWord(threading.Thread):
 class GUI:
     def __init__(self, root):
         self.root = root
-        root.title("🦂 S.H.A.U.L.A. v5.5")
+        root.title("🦂 S.H.A.U.L.A. v6.0")
         root.geometry("950x720")
         root.configure(bg="#1a1a2e")
 
-        tk.Label(root, text="🦂  S.H.A.U.L.A. v5.5  🦂",
+        tk.Label(root, text="🦂  S.H.A.U.L.A. v6.0  🦂",
                  font=("Segoe UI", 22, "bold"), bg="#1a1a2e", fg="#ff6b9d").pack(pady=(12, 0))
         tk.Label(root, text="La tua assistente devota, Padrone~!",
                  font=("Segoe UI", 10, "italic"), bg="#1a1a2e", fg="#a0a0c0").pack()
@@ -1308,11 +1485,19 @@ class GUI:
         else:
             self.scrivi("📔 Diario: ancora vuoto. Scriverò tra poco! 🦂\n")
 
-        self.scrivi("\n💡 Comandi principali:\n")
-        self.scrivi("   WhatsApp: 'di a Selua che ti voglio bene'\n")
-        self.scrivi("   Diario: 'scrivi diario', 'leggi diario', 'statistiche diario'\n")
-        self.scrivi("   PC: 'processi', 'pulisci temp', 'info disco'\n")
-        self.scrivi("   Audio: 'alza spotify', 'muta discord', 'app audio'\n\n")
+        # Verifica Playwright
+        try:
+            from playwright.sync_api import sync_playwright
+            self.scrivi("🌐 Navigazione autonoma: ✅ attiva\n")
+        except ImportError:
+            self.scrivi("🌐 Navigazione autonoma: ❌ Playwright non installato\n")
+
+        self.scrivi("\n💡 Comandi navigazione:\n")
+        self.scrivi("   'naviga su google e cerca meteo roma'\n")
+        self.scrivi("   'naviga su amazon.it e cerca cuffie bluetooth'\n")
+        self.scrivi("   'estrai prezzi da https://...'\n")
+        self.scrivi("   'screenshot di https://...'\n")
+        self.scrivi("   ⚠️ Se appare un CAPTCHA, risolvilo tu in Chrome!\n\n")
 
         threading.Thread(target=lambda: parla("Shaula è pronta, Padrone~!"), daemon=True).start()
         self.wake = None
@@ -1323,7 +1508,7 @@ class GUI:
 
     def _loop_diario(self):
         while True:
-            time.sleep(21600)  # 6 ore
+            time.sleep(21600)
             controlla_diario_automatico(self.output)
 
     def scrivi(self, t):
