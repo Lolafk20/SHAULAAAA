@@ -1,5 +1,5 @@
 # ============================================================
-# S.H.A.U.L.A. v6.0 - Navigazione autonoma con Playwright
+# S.H.A.U.L.A. v6.1 - Navigazione autonoma human-like
 # ============================================================
 import os, sys, json, time, shutil, datetime, subprocess
 import threading, webbrowser, ctypes, random, re, glob
@@ -368,28 +368,38 @@ def rispondi_con_ricerca(query, output):
     parla(risposta or risultati[0].get('body', '')[:300], output)
 
 # ============================================================
-# NAVIGAZIONE AUTONOMA CON PLAYWRIGHT
+# NAVIGAZIONE AUTONOMA - HUMAN-LIKE
 # ============================================================
+import random as _rnd
+
+def _pausa_umana(min_sec=0.8, max_sec=2.5):
+    time.sleep(_rnd.uniform(min_sec, max_sec))
+
+def _pausa_breve():
+    time.sleep(_rnd.uniform(0.3, 0.9))
+
+def _pausa_lunga():
+    time.sleep(_rnd.uniform(1.5, 3.5))
+
 def _rileva_captcha(page):
-    """Rileva se c'è un CAPTCHA sulla pagina."""
     try:
         html = page.content().lower()
         indicatori = ["recaptcha", "hcaptcha", "cf-turnstile",
                       "challenge-platform", "g-recaptcha", "captcha",
-                      "verify you are human", "verifica che sei umano"]
+                      "verify you are human", "verifica che sei umano",
+                      "unusual traffic", "traffico insolito"]
         return any(ind in html for ind in indicatori)
     except Exception:
         return False
 
 def _attendi_risoluzione_captcha(page, output, timeout=120):
-    """Aspetta che l'utente risolva il CAPTCHA manualmente."""
     try:
         img_path = os.path.join(BASE_DIR, "_captcha.png")
         page.screenshot(path=img_path)
-        parla(f"⚠️ Padrone~! C'è un CAPTCHA! Guarda la finestra di Chrome, "
-              f"clicca 'Non sono un robot', poi aspetta. Shaula riprende da sola! 🦂", output)
+        parla("⚠️ Padrone~! C'è un CAPTCHA! Guarda Chrome, "
+              "clicca 'Non sono un robot', poi aspetta. Shaula riprende da sola! 🦂", output)
     except Exception:
-        parla("⚠️ CAPTCHA rilevato! Risolvilo nella finestra Chrome, Padrone~!", output)
+        parla("⚠️ CAPTCHA rilevato! Risolvilo in Chrome, Padrone~!", output)
 
     for _ in range(timeout):
         time.sleep(1)
@@ -399,8 +409,127 @@ def _attendi_risoluzione_captcha(page, output, timeout=120):
     parla("⏰ Tempo scaduto, Padrone~! Chiudo il browser.", output)
     return False
 
+def _mouse_umano(page, x, y):
+    """Muovi il mouse con curva di Bézier come un umano."""
+    try:
+        x0 = _rnd.randint(200, 800)
+        y0 = _rnd.randint(200, 600)
+
+        cx1 = x0 + (x - x0) * _rnd.uniform(0.2, 0.4) + _rnd.randint(-80, 80)
+        cy1 = y0 + (y - y0) * _rnd.uniform(0.2, 0.4) + _rnd.randint(-80, 80)
+        cx2 = x0 + (x - x0) * _rnd.uniform(0.6, 0.8) + _rnd.randint(-80, 80)
+        cy2 = y0 + (y - y0) * _rnd.uniform(0.6, 0.8) + _rnd.randint(-80, 80)
+
+        punti = _rnd.randint(25, 45)
+        for i in range(punti + 1):
+            t = i / punti
+            x_t = ((1-t)**3 * x0 + 3*(1-t)**2*t*cx1
+                   + 3*(1-t)*t**2*cx2 + t**3 * x)
+            y_t = ((1-t)**3 * y0 + 3*(1-t)**2*t*cy1
+                   + 3*(1-t)*t**2*cy2 + t**3 * y)
+
+            x_t += _rnd.uniform(-1.5, 1.5)
+            y_t += _rnd.uniform(-1.5, 1.5)
+
+            page.mouse.move(x_t, y_t)
+            time.sleep(_rnd.uniform(0.003, 0.012))
+
+        if _rnd.random() < 0.3:
+            page.mouse.move(x + _rnd.randint(-5, 5), y + _rnd.randint(-5, 5))
+            time.sleep(_rnd.uniform(0.05, 0.15))
+            page.mouse.move(x, y)
+            time.sleep(0.05)
+
+    except Exception as e:
+        print(f"Errore mouse: {e}")
+        try:
+            page.mouse.move(x, y)
+        except Exception:
+            pass
+
+def _click_umano(page, x, y):
+    _mouse_umano(page, x, y)
+    _pausa_breve()
+    if _rnd.random() < 0.4:
+        time.sleep(_rnd.uniform(0.1, 0.4))
+    page.mouse.click(x, y)
+
+def _scrivi_umano(page, selettore, testo):
+    """Scrivi con velocità variabile e micro-errori."""
+    try:
+        elem = page.query_selector(selettore)
+        if not elem:
+            return False
+
+        box = elem.bounding_box()
+        if box:
+            x = box["x"] + box["width"] * _rnd.uniform(0.3, 0.7)
+            y = box["y"] + box["height"] * _rnd.uniform(0.3, 0.7)
+            _click_umano(page, x, y)
+            _pausa_breve()
+
+        for i, char in enumerate(testo):
+            base_delay = _rnd.uniform(0.05, 0.18)
+            if i < 3:
+                base_delay += _rnd.uniform(0.05, 0.15)
+            if _rnd.random() < 0.06:
+                base_delay += _rnd.uniform(0.3, 0.9)
+
+            page.keyboard.type(char)
+            time.sleep(base_delay)
+
+            if _rnd.random() < 0.015 and char.isalpha() and i > 2:
+                sbagliato = _rnd.choice("abcdefghijklmnopqrstuvwxyz")
+                page.keyboard.type(sbagliato)
+                time.sleep(_rnd.uniform(0.05, 0.15))
+                page.keyboard.press("Backspace")
+                time.sleep(_rnd.uniform(0.08, 0.2))
+
+        return True
+    except Exception as e:
+        print(f"Errore digitazione: {e}")
+        return False
+
+def _scroll_umano(page, volte=2):
+    for _ in range(volte):
+        delta = _rnd.randint(150, 500)
+        try:
+            page.mouse.wheel(0, delta)
+        except Exception:
+            pass
+        time.sleep(_rnd.uniform(0.5, 1.8))
+        if _rnd.random() < 0.25:
+            page.mouse.wheel(0, -_rnd.randint(50, 150))
+            time.sleep(_rnd.uniform(0.3, 0.8))
+
+def _muovi_e_clicca_umano(page, testo_selettore=None, selettore=None):
+    try:
+        elem = None
+        if selettore:
+            elem = page.query_selector(selettore)
+        elif testo_selettore:
+            elem = (page.query_selector(f"text={testo_selettore}")
+                    or page.query_selector(f"a:has-text('{testo_selettore}')")
+                    or page.query_selector(f"button:has-text('{testo_selettore}')"))
+
+        if not elem:
+            return False
+
+        box = elem.bounding_box()
+        if not box:
+            elem.click()
+            return True
+
+        x = box["x"] + box["width"] * _rnd.uniform(0.3, 0.7)
+        y = box["y"] + box["height"] * _rnd.uniform(0.3, 0.7)
+
+        _click_umano(page, x, y)
+        return True
+    except Exception as e:
+        print(f"Errore click umano: {e}")
+        return False
+
 def naviga_autonomo(azione, output):
-    """Naviga in autonomia usando Playwright con Chrome reale + stealth."""
     if not CONFIG.get("navigazione_attiva", True):
         parla("La navigazione è disattivata, Padrone~!", output)
         return False
@@ -411,7 +540,6 @@ def naviga_autonomo(azione, output):
 
     parla(f"Shaula naviga: '{azione}'... 🌐", output)
 
-    # 1. Genera il piano con Gemini
     try:
         key = CONFIG["gemini_api_key"].strip()
         genai.configure(api_key=key)
@@ -421,17 +549,25 @@ def naviga_autonomo(azione, output):
 L'utente vuole: "{azione}"
 
 Genera SOLO il codice Python (nessun commento, nessun markdown) che:
-- Usa la variabile `page` già disponibile (browser Playwright già aperto)
+- Usa la variabile `page` già disponibile
 - Compie l'azione passo passo
-- Usa selettori robusti (testo visibile, role, placeholder)
-- Aspetta il caricamento con page.wait_for_timeout(1500) tra le azioni
+- Usa selettori robusti (testo visibile, role, placeholder, name)
+- Tra le azioni usa SEMPRE una di queste funzioni helper già definite:
+  * `_pausa_umana()` - pausa di riflessione
+  * `_pausa_breve()` - pausa breve
+  * `_pausa_lunga()` - pausa lunga
+  * `_scroll_umano(page)` - scroll naturale
+  * `_scrivi_umano(page, selettore, testo)` - scrittura umana
+  * `_muovi_e_clicca_umano(page, testo_selettore='...')` - click su testo
+- Usa `page.goto(url)` per navigare
+- Aspetta il caricamento con `page.wait_for_timeout(_rnd.randint(1500, 3000))`
 - Massimo 15 righe di codice
 - Alla fine, salva una variabile `result` con un riassunto testuale (max 200 caratteri)
 
 REGOLE:
 - Solo codice Python valido
 - Niente markdown, niente ```python, niente spiegazioni
-- Inizia direttamente con page.xxx
+- Inizia direttamente con page.xxx o con _pausa_breve()
 """
         r = m.generate_content(prompt)
         codice = r.text.strip()
@@ -444,13 +580,11 @@ REGOLE:
         parla(f"❌ Errore generazione piano: {str(e)[:150]}", output)
         return False
 
-    # 2. Esegui in un thread
     def _esegui():
         try:
             from playwright.sync_api import sync_playwright
             with sync_playwright() as p:
                 browser = None
-                # Prova prima con Chrome reale (stealth)
                 try:
                     browser = p.chromium.launch_persistent_context(
                         user_data_dir=CHROME_PROFILE_DIR,
@@ -461,9 +595,18 @@ REGOLE:
                             "--disable-infobars",
                             "--no-default-browser-check",
                             "--no-first-run",
+                            "--disable-features=IsolateOrigins,site-per-process",
+                            "--disable-site-isolation-trials",
                         ],
                         locale="it-IT",
                         timezone_id="Europe/Rome",
+                        viewport={"width": 1366, "height": 768},
+                        user_agent=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                                    "Chrome/131.0.0.0 Safari/537.36"),
+                        device_scale_factor=1,
+                        is_mobile=False,
+                        has_touch=False,
                     )
                     page = browser.pages[0] if browser.pages else browser.new_page()
                 except Exception as e:
@@ -474,50 +617,75 @@ REGOLE:
                     )
                     page = browser.new_page()
 
-                # Stealth: rimuovi tracce di automazione
                 try:
                     page.add_init_script("""
-                        Object.defineProperty(navigator, 'webdriver', {
-                            get: () => undefined
-                        });
-                        window.chrome = { runtime: {} };
+                        Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                        window.chrome = {runtime: {}, loadTimes: function() {}, csi: function() {}};
                         Object.defineProperty(navigator, 'plugins', {
-                            get: () => [1, 2, 3, 4, 5]
+                            get: () => [
+                                {name: 'PDF Viewer', filename: 'internal-pdf-viewer'},
+                                {name: 'Chrome PDF Viewer', filename: 'internal-pdf-viewer'},
+                                {name: 'Chromium PDF Viewer', filename: 'internal-pdf-viewer'},
+                            ]
                         });
-                        Object.defineProperty(navigator, 'languages', {
-                            get: () => ['it-IT', 'it', 'en-US', 'en']
-                        });
+                        Object.defineProperty(navigator, 'languages',
+                            {get: () => ['it-IT', 'it', 'en-US', 'en']});
+                        Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
+                        Object.defineProperty(navigator, 'hardwareConcurrency', {get: () => 8});
+                        Object.defineProperty(navigator, 'deviceMemory', {get: () => 8});
+                        const getParameter = WebGLRenderingContext.prototype.getParameter;
+                        WebGLRenderingContext.prototype.getParameter = function(parameter) {
+                            if (parameter === 37445) return 'Intel Inc.';
+                            if (parameter === 37446) return 'Intel Iris OpenGL Engine';
+                            return getParameter.apply(this, [parameter]);
+                        };
+                        const originalQuery = window.navigator.permissions.query;
+                        window.navigator.permissions.query = (parameters) => (
+                            parameters.name === 'notifications' ?
+                                Promise.resolve({state: Notification.permission}) :
+                                originalQuery(parameters)
+                        );
                     """)
                 except Exception:
                     pass
 
                 page.set_extra_http_headers({
-                    "Accept-Language": "it-IT,it;q=0.9,en;q=0.8"
+                    "Accept-Language": "it-IT,it;q=0.9,en;q=0.8",
+                    "Accept-Encoding": "gzip, deflate, br",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
                 })
 
-                # Esegui il codice generato
-                namespace = {"page": page, "result": None, "time": time}
+                namespace = {
+                    "page": page,
+                    "result": None,
+                    "time": time,
+                    "_rnd": _rnd,
+                    "_pausa_umana": _pausa_umana,
+                    "_pausa_breve": _pausa_breve,
+                    "_pausa_lunga": _pausa_lunga,
+                    "_scroll_umano": _scroll_umano,
+                    "_scrivi_umano": _scrivi_umano,
+                    "_click_umano": _click_umano,
+                    "_muovi_e_clicca_umano": _muovi_e_clicca_umano,
+                }
                 try:
                     exec(codice, namespace)
                 except Exception as e:
                     print(f"Errore esecuzione: {e}")
-                    parla(f"❌ Errore durante la navigazione: {str(e)[:150]}", output)
+                    parla(f"❌ Errore navigazione: {str(e)[:150]}", output)
                     try: browser.close()
                     except: pass
                     return
 
-                # Rileva CAPTCHA
                 if _rileva_captcha(page):
                     if not _attendi_risoluzione_captcha(page, output):
                         try: browser.close()
                         except: pass
                         return
 
-                # Riporta risultato
                 risultato = namespace.get("result") or "Azione completata"
                 parla(f"✅ {risultato}, Padrone~!", output)
 
-                # Lascia il browser aperto 12 secondi per vedere il risultato
                 parla("Shaula lascia il browser aperto 12 secondi, Padrone~!", output)
                 time.sleep(12)
 
@@ -525,7 +693,7 @@ REGOLE:
                 except: pass
 
         except ImportError:
-            parla("❌ Playwright non installato, Padrone~! Ricompila con requirements aggiornato.", output)
+            parla("❌ Playwright non installato, Padrone~!", output)
         except Exception as e:
             parla(f"❌ Errore navigazione: {str(e)[:150]}", output)
 
@@ -533,12 +701,10 @@ REGOLE:
     return True
 
 def estrai_da_sito(url, cosa_estrarre, output):
-    """Estrae dati da un sito."""
     azione = f"vai su {url}, {cosa_estrarre}, poi metti in result cosa hai trovato"
     return naviga_autonomo(azione, output)
 
 def screenshot_sito(url, output):
-    """Screenshot di un sito (headless, veloce)."""
     def _thread():
         try:
             from playwright.sync_api import sync_playwright
@@ -998,10 +1164,7 @@ def esegui(comando, output):
 
     estrai_info_automatiche(cl, output)
 
-    # ============================================================
-    # NAVIGAZIONE AUTONOMA
-    # ============================================================
-    # "naviga su google e cerca meteo roma"
+    # ---- NAVIGAZIONE AUTONOMA ----
     m = re.search(r"^naviga su\s+(.+?)\s+e\s+(.+)$", cl, re.IGNORECASE)
     if m:
         sito = m.group(1).strip()
@@ -1009,7 +1172,6 @@ def esegui(comando, output):
         threading.Thread(target=naviga_autonomo, args=(f"vai su {sito} e {resto}", output), daemon=True).start()
         return True
 
-    # "naviga https://... e ..."
     m = re.search(r"^naviga\s+(https?://[^\s]+)\s+e\s+(.+)$", cl, re.IGNORECASE)
     if m:
         url = m.group(1).strip()
@@ -1017,7 +1179,6 @@ def esegui(comando, output):
         threading.Thread(target=naviga_autonomo, args=(f"vai su {url} e {resto}", output), daemon=True).start()
         return True
 
-    # "estrai [cosa] da [URL]"
     m = re.search(r"^estrai\s+(.+?)\s+da\s+(https?://[^\s]+)$", cl, re.IGNORECASE)
     if m:
         cosa = m.group(1).strip()
@@ -1025,15 +1186,12 @@ def esegui(comando, output):
         threading.Thread(target=estrai_da_sito, args=(url, cosa, output), daemon=True).start()
         return True
 
-    # "screenshot di [URL]"
     m = re.search(r"^screenshot (?:di|del sito)\s+(https?://[^\s]+)$", cl, re.IGNORECASE)
     if m:
         screenshot_sito(m.group(1).strip(), output)
         return True
 
-    # ============================================================
-    # DIARIO
-    # ============================================================
+    # ---- DIARIO ----
     if "scrivi" in c and "diario" in c:
         parla("Shaula prende la penna e scrive, Padrone~... 📔", output)
         def _s():
@@ -1427,11 +1585,11 @@ class WakeWord(threading.Thread):
 class GUI:
     def __init__(self, root):
         self.root = root
-        root.title("🦂 S.H.A.U.L.A. v6.0")
+        root.title("🦂 S.H.A.U.L.A. v6.1")
         root.geometry("950x720")
         root.configure(bg="#1a1a2e")
 
-        tk.Label(root, text="🦂  S.H.A.U.L.A. v6.0  🦂",
+        tk.Label(root, text="🦂  S.H.A.U.L.A. v6.1  🦂",
                  font=("Segoe UI", 22, "bold"), bg="#1a1a2e", fg="#ff6b9d").pack(pady=(12, 0))
         tk.Label(root, text="La tua assistente devota, Padrone~!",
                  font=("Segoe UI", 10, "italic"), bg="#1a1a2e", fg="#a0a0c0").pack()
@@ -1485,10 +1643,9 @@ class GUI:
         else:
             self.scrivi("📔 Diario: ancora vuoto. Scriverò tra poco! 🦂\n")
 
-        # Verifica Playwright
         try:
             from playwright.sync_api import sync_playwright
-            self.scrivi("🌐 Navigazione autonoma: ✅ attiva\n")
+            self.scrivi("🌐 Navigazione autonoma human-like: ✅ attiva\n")
         except ImportError:
             self.scrivi("🌐 Navigazione autonoma: ❌ Playwright non installato\n")
 
