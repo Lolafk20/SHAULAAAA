@@ -9,5 +9,6 @@ duckduckgo-search
 pycaw
 comtypes
 requests
-pyautogui
+playwright
+chess
 pyinstaller
