@@ -1,5 +1,5 @@
 # ============================================================
-# S.H.A.U.L.A. v6.2 - Navigazione human-like + limite giornaliero
+# S.H.A.U.L.A. v7.0 - Con gioco scacchi
 # ============================================================
 import os, sys, json, time, shutil, datetime, subprocess
 import threading, webbrowser, ctypes, random, re, glob
@@ -10,7 +10,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
 import tkinter as tk
-from tkinter import scrolledtext, simpledialog
+from tkinter import scrolledtext, simpledialog, messagebox, colorchooser
 
 def try_import(name):
     try:
@@ -25,6 +25,7 @@ psutil = try_import("psutil")
 keyboard = try_import("keyboard")
 requests = try_import("requests")
 pyautogui = try_import("pyautogui")
+chess = try_import("chess")
 DDGS = None
 try:
     from duckduckgo_search import DDGS as _DDGS
@@ -62,6 +63,7 @@ NOTE_FILE = os.path.join(BASE_DIR, "note.json")
 AGENDA_FILE = os.path.join(BASE_DIR, "agenda.json")
 DIARIO_FILE = os.path.join(BASE_DIR, "diario.json")
 CHROME_PROFILE_DIR = os.path.join(BASE_DIR, "_chrome_profile")
+STOCKFISH_EXE = os.path.join(BASE_DIR, "stockfish.exe")
 
 def carica_json(p, default):
     if os.path.exists(p):
@@ -101,7 +103,9 @@ CONFIG = carica_json(CONFIG_FILE, {
     "navigazione_attiva": True,
     "navigazioni_limite_giorno": 5,
     "navigazioni_usate_oggi": 0,
-    "navigazioni_data": ""
+    "navigazioni_data": "",
+    "scacchi_livello": "medio",
+    "scacchi_motore": "interno"
 })
 MEMORIA = carica_json(MEMORIA_FILE, {"ricordi": [], "preferenze": {}, "info": {}})
 STORICO = carica_json(STORICO_FILE, {"conversazioni": []})
@@ -127,7 +131,8 @@ SITI_WEB = {
     "drive": "https://drive.google.com", "calendar": "https://calendar.google.com",
     "calendario": "https://calendar.google.com", "steam": "https://store.steampowered.com",
     "telegram": "https://web.telegram.org", "discord": "https://discord.com/app",
-    "linkedin": "https://www.linkedin.com",
+    "linkedin": "https://www.linkedin.com", "lichess": "https://lichess.org",
+    "chess.com": "https://www.chess.com",
 }
 
 PROGRAMMI_COMUNI = {
@@ -154,7 +159,8 @@ VERBI_COMANDO = [
     "screenshot", "converti", "traduci", "riassumi", "ricorda", "dimentica",
     "modalità", "modalita", "processi", "pulisci", "email", "mail", "agenda",
     "evento", "nota", "lista", "whatsapp", "dì", "di", "dici", "manda", "invia",
-    "messaggio", "diario", "naviga", "estrai", "navigazioni", "resetta", "cambia"
+    "messaggio", "diario", "naviga", "estrai", "navigazioni", "resetta", "cambia",
+    "gioca", "scacchi", "partita", "muovi", "arrenditi"
 ]
 
 def sembra_comando(testo):
@@ -305,7 +311,7 @@ def chiedi_gemini(testo):
         if "API_KEY_INVALID" in err:
             return "❌ La chiave API non è valida."
         if "404" in err and "no longer available" in err:
-            return "❌ Modello non più disponibile. Usa 'gemini-flash-latest' in config.json."
+            return "❌ Modello non più disponibile."
         return f"Errore: {err[:200]}"
 
 def estrai_info_automatiche(testo, output):
@@ -371,6 +377,444 @@ def rispondi_con_ricerca(query, output):
     parla(risposta or risultati[0].get('body', '')[:300], output)
 
 # ============================================================
+# SCACCHI - MOTORE MINIMAX INTERNO + GUI
+# ============================================================
+VALORI_PEZZI = {'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 20000}
+SIMBOLI_UNICODE = {
+    'P': '♙', 'N': '♘', 'B': '♗', 'R': '♖', 'Q': '♕', 'K': '♔',
+    'p': '♟', 'n': '♞', 'b': '♝', 'r': '♜', 'q': '♛', 'k': '♚'
+}
+
+def _valuta_scacchiera(board):
+    """Valutazione semplice: materiale + posizione."""
+    if board.is_checkmate():
+        return -99999 if board.turn else 99999
+    if board.is_stalemate() or board.is_insufficient_material():
+        return 0
+    score = 0
+    for square in chess.SQUARES:
+        pezzo = board.piece_at(square)
+        if pezzo:
+            valore = VALORI_PEZZI.get(pezzo.symbol().upper(), 0)
+            if pezzo.color == chess.WHITE:
+                score += valore
+            else:
+                score -= valore
+    return score
+
+def _minimax(board, depth, alpha, beta, maximizing):
+    """Minimax con alpha-beta pruning."""
+    if depth == 0 or board.is_game_over():
+        return _valuta_scacchiera(board)
+    
+    if maximizing:
+        max_eval = -99999
+        for move in board.legal_moves:
+            board.push(move)
+            eval_score = _minimax(board, depth - 1, alpha, beta, False)
+            board.pop()
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = 99999
+        for move in board.legal_moves:
+            board.push(move)
+            eval_score = _minimax(board, depth - 1, alpha, beta, True)
+            board.pop()
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def _mossa_motore_interno(board, profondita=3):
+    """Trova la mossa migliore con minimax."""
+    migliore = None
+    max_eval = -99999
+    mosse = list(board.legal_moves)
+    random.shuffle(mosse)  # varia per non essere prevedibile
+    
+    for move in mosse:
+        board.push(move)
+        eval_score = _minimax(board, profondita - 1, -99999, 99999, False)
+        board.pop()
+        if eval_score > max_eval:
+            max_eval = eval_score
+            migliore = move
+    return migliore
+
+def _mossa_stockfish(board, livello="medio"):
+    """Trova la mossa con Stockfish (se disponibile)."""
+    if not os.path.exists(STOCKFISH_EXE):
+        return None
+    try:
+        import chess.engine
+        profondita_map = {"facile": 2, "medio": 6, "difficile": 12, "maestro": 18}
+        depth = profondita_map.get(livello, 6)
+        
+        engine = chess.engine.SimpleEngine.popen_uci(STOCKFISH_EXE)
+        result = engine.play(board, chess.engine.Limit(depth=depth))
+        engine.quit()
+        return result.move
+    except Exception as e:
+        print(f"Errore Stockfish: {e}")
+        return None
+
+class ScacchieraGUI:
+    """Interfaccia grafica per giocare a scacchi con SHAULA."""
+    
+    def __init__(self, root, modo="vs_me", output_cb=None):
+        self.root = root
+        self.output = output_cb or print
+        self.modo = modo  # "vs_me" o "auto"
+        self.board = chess.Board()
+        self.casa_selezionata = None
+        self.mosse_legali_da_casa = []
+        self.partita_finita = False
+        
+        # Livello
+        self.livello = CONFIG.get("scacchi_livello", "medio")
+        self.motore = CONFIG.get("scacchi_motore", "interno")
+        
+        # Colori GUI
+        self.colore_chiaro = "#F0D9B5"
+        self.colore_scuro = "#B58863"
+        self.colore_selezione = "#7FB069"
+        self.colore_mossa_legale = "#FFD966"
+        self.colore_ultima_mossa = "#E8B923"
+        
+        self.ultima_mossa = None
+        
+        self.root.title("🦂 SHAULA - Scacchi")
+        self.root.geometry("700x800")
+        self.root.configure(bg="#1a1a2e")
+        
+        self._costruisci_gui()
+        self._aggiorna_scacchiera()
+        
+        # Se in modalità auto, Shaula fa la prima mossa se è il suo turno
+        if self.modo == "auto" and not self.board.turn:
+            self.root.after(1000, self._mossa_shaula)
+    
+    def _costruisci_gui(self):
+        # Header
+        tk.Label(self.root, text="🦂 SHAULA - Scacchi ♟️",
+                 font=("Segoe UI", 18, "bold"),
+                 bg="#1a1a2e", fg="#ff6b9d").pack(pady=8)
+        
+        # Info
+        self.info_label = tk.Label(self.root, text="",
+                                    font=("Segoe UI", 10),
+                                    bg="#1a1a2e", fg="#a0a0c0")
+        self.info_label.pack()
+        
+        # Canvas scacchiera
+        self.canvas = tk.Canvas(self.root, width=640, height=640,
+                                 bg="#0f0f1e", highlightthickness=0)
+        self.canvas.pack(pady=10)
+        self.canvas.bind("<Button-1>", self._click_scacchiera)
+        
+        # Frame bottoni
+        f = tk.Frame(self.root, bg="#1a1a2e")
+        f.pack(pady=8)
+        
+        tk.Button(f, text="🔄 Nuova partita", command=self._nuova_partita,
+                  bg="#4a90e2", fg="white", font=("Segoe UI", 10, "bold"),
+                  relief=tk.FLAT, padx=12).pack(side=tk.LEFT, padx=4)
+        
+        tk.Button(f, text="↩️ Annulla mossa", command=self._annulla_mossa,
+                  bg="#ffcc66", fg="#1a1a2e", font=("Segoe UI", 10, "bold"),
+                  relief=tk.FLAT, padx=12).pack(side=tk.LEFT, padx=4)
+        
+        tk.Button(f, text="🏳️ Arrenditi", command=self._arrenditi,
+                  bg="#ff6b6b", fg="white", font=("Segoe UI", 10, "bold"),
+                  relief=tk.FLAT, padx=12).pack(side=tk.LEFT, padx=4)
+        
+        tk.Button(f, text="❌ Chiudi", command=self._chiudi,
+                  bg="#7a7a7a", fg="white", font=("Segoe UI", 10, "bold"),
+                  relief=tk.FLAT, padx=12).pack(side=tk.LEFT, padx=4)
+        
+        # Info livello
+        tk.Label(self.root, text=f"Livello: {self.livello} | Motore: {self.motore}",
+                 font=("Segoe UI", 9),
+                 bg="#1a1a2e", fg="#7fdb8f").pack()
+    
+    def _coord_to_rc(self, square):
+        """Converte chess.Square in riga/colonna GUI."""
+        col = chess.square_file(square)
+        row = 7 - chess.square_rank(square)
+        return row, col
+    
+    def _rc_to_coord(self, row, col):
+        """Converte riga/colonna GUI in chess.Square."""
+        file = col
+        rank = 7 - row
+        return chess.square(file, rank)
+    
+    def _aggiorna_scacchiera(self):
+        self.canvas.delete("all")
+        lato = 80
+        
+        # Disegna caselle
+        for row in range(8):
+            for col in range(8):
+                x1 = col * lato
+                y1 = row * lato
+                x2 = x1 + lato
+                y2 = y1 + lato
+                
+                colore = self.colore_chiaro if (row + col) % 2 == 0 else self.colore_scuro
+                
+                # Highlight ultima mossa
+                if self.ultima_mossa:
+                    for sq in self.ultima_mossa:
+                        sq_row, sq_col = self._coord_to_rc(sq)
+                        if sq_row == row and sq_col == col:
+                            colore = self.colore_ultima_mossa
+                
+                # Highlight selezione
+                if self.casa_selezionata:
+                    s_row, s_col = self._coord_to_rc(self.casa_selezionata)
+                    if s_row == row and s_col == col:
+                        colore = self.colore_selezione
+                
+                self.canvas.create_rectangle(x1, y1, x2, y2, fill=colore, outline="")
+                
+                # Highlight mosse legali
+                for mossa in self.mosse_legali_da_casa:
+                    to_row, to_col = self._coord_to_rc(mossa.to_square)
+                    if to_row == row and to_col == col:
+                        self.canvas.create_oval(x1 + 25, y1 + 25, x2 - 25, y2 - 25,
+                                                fill=self.colore_mossa_legale, outline="")
+        
+        # Disegna pezzi
+        for square in chess.SQUARES:
+            pezzo = self.board.piece_at(square)
+            if pezzo:
+                row, col = self._coord_to_rc(square)
+                x = col * lato + lato // 2
+                y = row * lato + lato // 2
+                
+                symbol = SIMBOLI_UNICODE.get(pezzo.symbol(), '?')
+                colore_testo = "#FFFFFF" if pezzo.color == chess.WHITE else "#000000"
+                
+                self.canvas.create_text(x, y, text=symbol, font=("Segoe UI Symbol", 54),
+                                        fill=colore_testo)
+        
+        # Info turno
+        if self.board.is_checkmate():
+            vincitore = "Nero" if self.board.turn else "Bianco"
+            self.info_label.config(text=f"🏆 Scacco matto! Vince il {vincitore}!",
+                                    fg="#7fdb8f")
+            self.partita_finita = True
+        elif self.board.is_stalemate():
+            self.info_label.config(text="🤝 Stallo! Pareggio.", fg="#ffcc66")
+            self.partita_finita = True
+        elif self.board.is_check():
+            turno = "Bianco" if self.board.turn else "Nero"
+            self.info_label.config(text=f"⚠️ Scacco al {turno}!", fg="#ff6b6b")
+        else:
+            turno = "Bianco" if self.board.turn else "Nero"
+            self.info_label.config(text=f"Turno: {turno}", fg="#a0a0c0")
+    
+    def _click_scacchiera(self, event):
+        if self.partita_finita:
+            return
+        
+        # Se modalità auto, ignora click
+        if self.modo == "auto":
+            return
+        
+        # Solo se è il turno del giocatore umano (Bianco = umano)
+        if not self.board.turn:
+            return
+        
+        col = event.x // 80
+        row = event.y // 80
+        if not (0 <= row < 8 and 0 <= col < 8):
+            return
+        
+        square = self._rc_to_coord(row, col)
+        pezzo = self.board.piece_at(square)
+        
+        # Se ho già selezionato una casa
+        if self.casa_selezionata:
+            # Se clicco su una mossa legale, la eseguo
+            mossa_trovata = None
+            for m in self.mosse_legali_da_casa:
+                if m.to_square == square:
+                    # Gestisci promozione
+                    if m.promotion:
+                        mossa_trovata = chess.Move(m.from_square, m.to_square,
+                                                    promotion=chess.QUEEN)
+                    else:
+                        mossa_trovata = m
+                    break
+            
+            if mossa_trovata:
+                self._esegui_mossa(mossa_trovata)
+                self.casa_selezionata = None
+                self.mosse_legali_da_casa = []
+                self._aggiorna_scacchiera()
+                # Turno di Shaula dopo breve pausa
+                if not self.partita_finita:
+                    self.root.after(500, self._mossa_shaula)
+                return
+            
+            # Se clicco su un altro pezzo bianco, cambio selezione
+            if pezzo and pezzo.color == chess.WHITE:
+                self.casa_selezionata = square
+                self.mosse_legali_da_casa = [m for m in self.board.legal_moves
+                                              if m.from_square == square]
+                self._aggiorna_scacchiera()
+                return
+            else:
+                # Deseleziona
+                self.casa_selezionata = None
+                self.mosse_legali_da_casa = []
+                self._aggiorna_scacchiera()
+                return
+        
+        # Nessuna casa selezionata
+        if pezzo and pezzo.color == chess.WHITE:
+            self.casa_selezionata = square
+            self.mosse_legali_da_casa = [m for m in self.board.legal_moves
+                                          if m.from_square == square]
+            self._aggiorna_scacchiera()
+    
+    def _esegui_mossa(self, mossa):
+        # Traccia ultima mossa
+        self.ultima_mossa = (mossa.from_square, mossa.to_square)
+        # Esegui
+        san = self.board.san(mossa)
+        self.board.push(mossa)
+        return san
+    
+    def _mossa_shaula(self):
+        """Fa fare una mossa a SHAULA."""
+        if self.partita_finita:
+            return
+        if self.board.turn:
+            # Non è il turno di Shaula (lei gioca con il Nero)
+            return
+        
+        self.info_label.config(text="🤔 Shaula sta pensando...", fg="#ffcc66")
+        self.root.update()
+        
+        def _calcola():
+            mossa = None
+            if self.motore == "stockfish" and os.path.exists(STOCKFISH_EXE):
+                mossa = _mossa_stockfish(self.board, self.livello)
+            
+            if not mossa:
+                # Fallback a motore interno
+                profondita_map = {"facile": 2, "medio": 3, "difficile": 4, "maestro": 4}
+                depth = profondita_map.get(self.livello, 3)
+                mossa = _mossa_motore_interno(self.board, depth)
+            
+            if mossa:
+                self.root.after(0, lambda: self._esegui_mossa_shaula(mossa))
+        
+        threading.Thread(target=_calcola, daemon=True).start()
+    
+    def _esegui_mossa_shaula(self, mossa):
+        san = self._esegui_mossa(mossa)
+        self._aggiorna_scacchiera()
+        
+        if not self.partita_finita:
+            # Commenta la mossa
+            def _commenta():
+                prompt = (f"Sei Shaula di Re:Zero. Hai appena mosso '{san}' in una partita a scacchi. "
+                          f"Commenta brevemente la tua mossa in una frase, con la tua personalità "
+                          f"(devota, '~', 'ehehe', emoji 🦂💕). Non superare le 20 parole.")
+                risposta = chiedi_gemini(prompt)
+                if risposta:
+                    parla(risposta, self.output)
+            threading.Thread(target=_commenta, daemon=True).start()
+    
+    def _nuova_partita(self):
+        self.board = chess.Board()
+        self.casa_selezionata = None
+        self.mosse_legali_da_casa = []
+        self.ultima_mossa = None
+        self.partita_finita = False
+        self._aggiorna_scacchiera()
+        self.info_label.config(text="🔄 Nuova partita!", fg="#7fdb8f")
+        if self.modo == "auto":
+            self.root.after(1000, self._mossa_shaula)
+    
+    def _annulla_mossa(self):
+        if len(self.board.move_stack) >= 2:
+            self.board.pop()
+            self.board.pop()
+            self.ultima_mossa = None
+            self.casa_selezionata = None
+            self.mosse_legali_da_casa = []
+            self.partita_finita = False
+            self._aggiorna_scacchiera()
+            self.info_label.config(text="↩️ Mossa annullata", fg="#ffcc66")
+        elif len(self.board.move_stack) == 1 and not self.board.turn:
+            self.board.pop()
+            self._aggiorna_scacchiera()
+    
+    def _arrenditi(self):
+        vincitore = "Shaula vince! 🎉" if self.board.turn else "Hai vinto tu! 🏆"
+        self.info_label.config(text=f"🏳️ {vincitore}", fg="#7fdb8f")
+        self.partita_finita = True
+    
+    def _chiudi(self):
+        self.root.destroy()
+
+def avvia_scacchi(modo, output):
+    """Apre la finestra degli scacchi."""
+    if not chess:
+        parla("❌ Libreria 'chess' non installata, Padrone~! Ricompila con requirements aggiornato.", output)
+        return False
+    
+    def _apri():
+        try:
+            finestra = tk.Toplevel()
+            ScacchieraGUI(finestra, modo=modo, output_cb=output)
+            if modo == "vs_me":
+                parla("Shaula è pronta a giocare, Padrone~! Tu giochi con il Bianco, "
+                      "Shaula con il Nero. Buona partita! ♟️💕", output)
+            elif modo == "auto":
+                parla("Shaula gioca contro se stessa, Padrone~! "
+                      "Guardiamo insieme la partita! ♟️✨", output)
+        except Exception as e:
+            parla(f"❌ Errore apertura scacchiera: {str(e)[:150]}", output)
+    
+    threading.Thread(target=_apri, daemon=True).start()
+    return True
+
+def imposta_livello_scacchi(livello, output):
+    livelli_validi = ["facile", "medio", "difficile", "maestro"]
+    if livello not in livelli_validi:
+        parla(f"Livelli: {', '.join(livelli_validi)}", output)
+        return False
+    CONFIG["scacchi_livello"] = livello
+    salva_json(CONFIG_FILE, CONFIG)
+    parla(f"Livello scacchi impostato a '{livello}', Padrone~! ♟️", output)
+    return True
+
+def imposta_motore_scacchi(motore, output):
+    if motore not in ["interno", "stockfish"]:
+        parla("Motori disponibili: interno, stockfish", output)
+        return False
+    CONFIG["scacchi_motore"] = motore
+    salva_json(CONFIG_FILE, CONFIG)
+    if motore == "stockfish" and not os.path.exists(STOCKFISH_EXE):
+        parla(f"⚠️ Stockfish non trovato in {STOCKFISH_EXE}. "
+              f"Scaricalo da stockfishchess.org e mettilo nella cartella di SHAULA! "
+              f"Nel frattempo uso il motore interno. ♟️", output)
+    else:
+        parla(f"Motore scacchi: {motore}, Padrone~!", output)
+    return True
+
+# ============================================================
 # NAVIGAZIONE AUTONOMA - HUMAN-LIKE
 # ============================================================
 import random as _rnd
@@ -416,190 +860,115 @@ def _mouse_umano(page, x, y):
     try:
         x0 = _rnd.randint(200, 800)
         y0 = _rnd.randint(200, 600)
-
         cx1 = x0 + (x - x0) * _rnd.uniform(0.2, 0.4) + _rnd.randint(-80, 80)
         cy1 = y0 + (y - y0) * _rnd.uniform(0.2, 0.4) + _rnd.randint(-80, 80)
         cx2 = x0 + (x - x0) * _rnd.uniform(0.6, 0.8) + _rnd.randint(-80, 80)
         cy2 = y0 + (y - y0) * _rnd.uniform(0.6, 0.8) + _rnd.randint(-80, 80)
-
         punti = _rnd.randint(25, 45)
         for i in range(punti + 1):
             t = i / punti
-            x_t = ((1-t)**3 * x0 + 3*(1-t)**2*t*cx1
-                   + 3*(1-t)*t**2*cx2 + t**3 * x)
-            y_t = ((1-t)**3 * y0 + 3*(1-t)**2*t*cy1
-                   + 3*(1-t)*t**2*cy2 + t**3 * y)
-
+            x_t = ((1-t)**3 * x0 + 3*(1-t)**2*t*cx1 + 3*(1-t)*t**2*cx2 + t**3 * x)
+            y_t = ((1-t)**3 * y0 + 3*(1-t)**2*t*cy1 + 3*(1-t)*t**2*cy2 + t**3 * y)
             x_t += _rnd.uniform(-1.5, 1.5)
             y_t += _rnd.uniform(-1.5, 1.5)
-
             page.mouse.move(x_t, y_t)
             time.sleep(_rnd.uniform(0.003, 0.012))
-
-        if _rnd.random() < 0.3:
-            page.mouse.move(x + _rnd.randint(-5, 5), y + _rnd.randint(-5, 5))
-            time.sleep(_rnd.uniform(0.05, 0.15))
-            page.mouse.move(x, y)
-            time.sleep(0.05)
-
     except Exception as e:
         print(f"Errore mouse: {e}")
-        try:
-            page.mouse.move(x, y)
-        except Exception:
-            pass
 
 def _click_umano(page, x, y):
     _mouse_umano(page, x, y)
     _pausa_breve()
-    if _rnd.random() < 0.4:
-        time.sleep(_rnd.uniform(0.1, 0.4))
     page.mouse.click(x, y)
 
 def _scrivi_umano(page, selettore, testo):
     try:
         elem = page.query_selector(selettore)
-        if not elem:
-            return False
-
+        if not elem: return False
         box = elem.bounding_box()
         if box:
             x = box["x"] + box["width"] * _rnd.uniform(0.3, 0.7)
             y = box["y"] + box["height"] * _rnd.uniform(0.3, 0.7)
             _click_umano(page, x, y)
             _pausa_breve()
-
         for i, char in enumerate(testo):
             base_delay = _rnd.uniform(0.05, 0.18)
-            if i < 3:
-                base_delay += _rnd.uniform(0.05, 0.15)
-            if _rnd.random() < 0.06:
-                base_delay += _rnd.uniform(0.3, 0.9)
-
+            if i < 3: base_delay += _rnd.uniform(0.05, 0.15)
+            if _rnd.random() < 0.06: base_delay += _rnd.uniform(0.3, 0.9)
             page.keyboard.type(char)
             time.sleep(base_delay)
-
-            if _rnd.random() < 0.015 and char.isalpha() and i > 2:
-                sbagliato = _rnd.choice("abcdefghijklmnopqrstuvwxyz")
-                page.keyboard.type(sbagliato)
-                time.sleep(_rnd.uniform(0.05, 0.15))
-                page.keyboard.press("Backspace")
-                time.sleep(_rnd.uniform(0.08, 0.2))
-
         return True
-    except Exception as e:
-        print(f"Errore digitazione: {e}")
+    except Exception:
         return False
 
 def _scroll_umano(page, volte=2):
     for _ in range(volte):
         delta = _rnd.randint(150, 500)
-        try:
-            page.mouse.wheel(0, delta)
-        except Exception:
-            pass
+        try: page.mouse.wheel(0, delta)
+        except: pass
         time.sleep(_rnd.uniform(0.5, 1.8))
-        if _rnd.random() < 0.25:
-            page.mouse.wheel(0, -_rnd.randint(50, 150))
-            time.sleep(_rnd.uniform(0.3, 0.8))
 
 def _muovi_e_clicca_umano(page, testo_selettore=None, selettore=None):
     try:
         elem = None
-        if selettore:
-            elem = page.query_selector(selettore)
+        if selettore: elem = page.query_selector(selettore)
         elif testo_selettore:
             elem = (page.query_selector(f"text={testo_selettore}")
                     or page.query_selector(f"a:has-text('{testo_selettore}')")
                     or page.query_selector(f"button:has-text('{testo_selettore}')"))
-
-        if not elem:
-            return False
-
+        if not elem: return False
         box = elem.bounding_box()
-        if not box:
-            elem.click()
-            return True
-
+        if not box: elem.click(); return True
         x = box["x"] + box["width"] * _rnd.uniform(0.3, 0.7)
         y = box["y"] + box["height"] * _rnd.uniform(0.3, 0.7)
-
         _click_umano(page, x, y)
         return True
-    except Exception as e:
-        print(f"Errore click umano: {e}")
+    except Exception:
         return False
 
-# ============================================================
-# STATO LIMITE NAVIGAZIONI
-# ============================================================
 def stato_navigazioni():
-    """Restituisce lo stato del limite navigazioni."""
     oggi = datetime.date.today().isoformat()
     data_ultimo = CONFIG.get("navigazioni_data", "")
     limite = CONFIG.get("navigazioni_limite_giorno", 5)
-
     if data_ultimo != oggi:
         return f"🔄 Limite resettato per oggi! 0/{limite} navigazioni usate."
-
     usate = CONFIG.get("navigazioni_usate_oggi", 0)
     rimaste = limite - usate
+    if rimaste <= 0: return f"🚫 Limite raggiunto! {usate}/{limite} oggi."
+    elif rimaste <= 1: return f"⚠️ {usate}/{limite}. Ne resta solo 1!"
+    elif rimaste <= 2: return f"⚠️ {usate}/{limite}. Ne restano {rimaste}."
+    else: return f"✅ {usate}/{limite} navigazioni. Ne restano {rimaste}."
 
-    if rimaste <= 0:
-        return f"🚫 Limite raggiunto! {usate}/{limite} navigazioni oggi. Reset domani."
-    elif rimaste <= 1:
-        return f"⚠️ {usate}/{limite} navigazioni usate. Ne resta solo 1!"
-    elif rimaste <= 2:
-        return f"⚠️ {usate}/{limite} navigazioni usate. Ne restano {rimaste}."
-    else:
-        return f"✅ {usate}/{limite} navigazioni usate. Ne restano {rimaste}."
-
-# ============================================================
-# NAVIGAZIONE AUTONOMA (con limite giornaliero)
-# ============================================================
 def naviga_autonomo(azione, output):
     if not CONFIG.get("navigazione_attiva", True):
         parla("La navigazione è disattivata, Padrone~!", output)
         return False
-
     if not genai or not CONFIG.get("gemini_api_key"):
         parla("⚠️ Serve la API key Gemini, Padrone~", output)
         return False
 
-    # ============================================================
-    # CONTROLLO LIMITE GIORNALIERO
-    # ============================================================
     oggi = datetime.date.today().isoformat()
     data_ultimo = CONFIG.get("navigazioni_data", "")
     limite = CONFIG.get("navigazioni_limite_giorno", 5)
 
-    # Reset automatico a mezzanotte
     if data_ultimo != oggi:
         CONFIG["navigazioni_data"] = oggi
         CONFIG["navigazioni_usate_oggi"] = 0
         salva_json(CONFIG_FILE, CONFIG)
-        print(f"🔄 Limite navigazioni resettato per {oggi}")
 
     usate = CONFIG.get("navigazioni_usate_oggi", 0)
-
-    # Controllo limite
     if usate >= limite:
         parla(f"Padrone~! Shaula ha già navigato {usate} volte oggi "
-              f"(limite: {limite}). Devo fermarmi per non farmi bannare! "
-              f"Riprenderò domani, ehehe~ 🦂💤", output)
+              f"(limite: {limite}). Riprenderò domani! 🦂💤", output)
         return "LIMITE"
 
-    # Avvisa quando è agli ultimi tentativi
     rimaste = limite - usate
     if rimaste <= 1:
-        parla(f"⚠️ Padrone, questa è l'ultima navigazione di oggi! "
-              f"({usate}/{limite})", output)
+        parla(f"⚠️ Ultima navigazione di oggi! ({usate}/{limite})", output)
     elif rimaste <= 2:
-        parla(f"⚠️ Restano solo {rimaste} navigazioni oggi, Padrone~!", output)
+        parla(f"⚠️ Restano solo {rimaste} navigazioni oggi!", output)
 
-    parla(f"Shaula naviga: '{azione}'... 🌐 ({usate + 1}/{limite} oggi)", output)
-
-    # Incrementa contatore
+    parla(f"Shaula naviga: '{azione}'... 🌐 ({usate + 1}/{limite})", output)
     CONFIG["navigazioni_usate_oggi"] = usate + 1
     salva_json(CONFIG_FILE, CONFIG)
 
@@ -607,40 +976,18 @@ def naviga_autonomo(azione, output):
         key = CONFIG["gemini_api_key"].strip()
         genai.configure(api_key=key)
         m = genai.GenerativeModel(MODELLO_ATTIVO or MODELLO_FALLBACK)
-
-        prompt = f"""Sei un generatore di codice Playwright Python.
-L'utente vuole: "{azione}"
-
-Genera SOLO il codice Python (nessun commento, nessun markdown) che:
-- Usa la variabile `page` già disponibile
-- Compie l'azione passo passo
-- Usa selettori robusti (testo visibile, role, placeholder, name)
-- Tra le azioni usa SEMPRE una di queste funzioni helper già definite:
-  * `_pausa_umana()` - pausa di riflessione
-  * `_pausa_breve()` - pausa breve
-  * `_pausa_lunga()` - pausa lunga
-  * `_scroll_umano(page)` - scroll naturale
-  * `_scrivi_umano(page, selettore, testo)` - scrittura umana
-  * `_muovi_e_clicca_umano(page, testo_selettore='...')` - click su testo
-- Usa `page.goto(url)` per navigare
-- Aspetta il caricamento con `page.wait_for_timeout(_rnd.randint(1500, 3000))`
-- Massimo 15 righe di codice
-- Alla fine, salva una variabile `result` con un riassunto testuale (max 200 caratteri)
-
-REGOLE:
-- Solo codice Python valido
-- Niente markdown, niente ```python, niente spiegazioni
-- Inizia direttamente con page.xxx o con _pausa_breve()
-"""
+        prompt = f"""Genera SOLO codice Playwright Python per: "{azione}"
+Usa `page` già disponibile. Aiutanti: _pausa_breve(), _scrivi_umano(page, sel, txt),
+_muovi_e_clicca_umano(page, testo_selettore='...'). Max 15 righe.
+Alla fine salva `result` con riassunto. Solo codice, niente markdown."""
         r = m.generate_content(prompt)
         codice = r.text.strip()
         codice = re.sub(r"^```python\s*", "", codice)
         codice = re.sub(r"^```\s*", "", codice)
         codice = re.sub(r"\s*```$", "", codice)
-        codice = codice.strip()
-        print(f"Codice navigazione:\n{codice}")
+        print(f"Codice:\n{codice}")
     except Exception as e:
-        parla(f"❌ Errore generazione piano: {str(e)[:150]}", output)
+        parla(f"❌ Errore piano: {str(e)[:150]}", output)
         return False
 
     def _esegui():
@@ -650,92 +997,30 @@ REGOLE:
                 browser = None
                 try:
                     browser = p.chromium.launch_persistent_context(
-                        user_data_dir=CHROME_PROFILE_DIR,
-                        headless=False,
+                        user_data_dir=CHROME_PROFILE_DIR, headless=False,
                         channel="chrome",
-                        args=[
-                            "--disable-blink-features=AutomationControlled",
-                            "--disable-infobars",
-                            "--no-default-browser-check",
-                            "--no-first-run",
-                            "--disable-features=IsolateOrigins,site-per-process",
-                            "--disable-site-isolation-trials",
-                        ],
-                        locale="it-IT",
-                        timezone_id="Europe/Rome",
-                        viewport={"width": 1366, "height": 768},
-                        user_agent=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                                    "Chrome/131.0.0.0 Safari/537.36"),
-                        device_scale_factor=1,
-                        is_mobile=False,
-                        has_touch=False,
-                    )
+                        args=["--disable-blink-features=AutomationControlled"],
+                        locale="it-IT", timezone_id="Europe/Rome",
+                        viewport={"width": 1366, "height": 768})
                     page = browser.pages[0] if browser.pages else browser.new_page()
-                except Exception as e:
-                    print(f"Chrome reale non trovato, uso Chromium: {e}")
-                    browser = p.chromium.launch(
-                        headless=False,
-                        args=["--disable-blink-features=AutomationControlled"]
-                    )
+                except Exception:
+                    browser = p.chromium.launch(headless=False,
+                        args=["--disable-blink-features=AutomationControlled"])
                     page = browser.new_page()
 
-                try:
-                    page.add_init_script("""
-                        Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-                        window.chrome = {runtime: {}, loadTimes: function() {}, csi: function() {}};
-                        Object.defineProperty(navigator, 'plugins', {
-                            get: () => [
-                                {name: 'PDF Viewer', filename: 'internal-pdf-viewer'},
-                                {name: 'Chrome PDF Viewer', filename: 'internal-pdf-viewer'},
-                                {name: 'Chromium PDF Viewer', filename: 'internal-pdf-viewer'},
-                            ]
-                        });
-                        Object.defineProperty(navigator, 'languages',
-                            {get: () => ['it-IT', 'it', 'en-US', 'en']});
-                        Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
-                        Object.defineProperty(navigator, 'hardwareConcurrency', {get: () => 8});
-                        Object.defineProperty(navigator, 'deviceMemory', {get: () => 8});
-                        const getParameter = WebGLRenderingContext.prototype.getParameter;
-                        WebGLRenderingContext.prototype.getParameter = function(parameter) {
-                            if (parameter === 37445) return 'Intel Inc.';
-                            if (parameter === 37446) return 'Intel Iris OpenGL Engine';
-                            return getParameter.apply(this, [parameter]);
-                        };
-                        const originalQuery = window.navigator.permissions.query;
-                        window.navigator.permissions.query = (parameters) => (
-                            parameters.name === 'notifications' ?
-                                Promise.resolve({state: Notification.permission}) :
-                                originalQuery(parameters)
-                        );
-                    """)
-                except Exception:
-                    pass
+                page.add_init_script("""
+                    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                    window.chrome = {runtime: {}};
+                """)
 
-                page.set_extra_http_headers({
-                    "Accept-Language": "it-IT,it;q=0.9,en;q=0.8",
-                    "Accept-Encoding": "gzip, deflate, br",
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-                })
-
-                namespace = {
-                    "page": page,
-                    "result": None,
-                    "time": time,
-                    "_rnd": _rnd,
-                    "_pausa_umana": _pausa_umana,
-                    "_pausa_breve": _pausa_breve,
-                    "_pausa_lunga": _pausa_lunga,
-                    "_scroll_umano": _scroll_umano,
-                    "_scrivi_umano": _scrivi_umano,
-                    "_click_umano": _click_umano,
-                    "_muovi_e_clicca_umano": _muovi_e_clicca_umano,
-                }
-                try:
-                    exec(codice, namespace)
+                namespace = {"page": page, "result": None, "time": time,
+                             "_rnd": _rnd, "_pausa_breve": _pausa_breve,
+                             "_scrivi_umano": _scrivi_umano,
+                             "_muovi_e_clicca_umano": _muovi_e_clicca_umano,
+                             "_click_umano": _click_umano}
+                try: exec(codice, namespace)
                 except Exception as e:
-                    print(f"Errore esecuzione: {e}")
-                    parla(f"❌ Errore navigazione: {str(e)[:150]}", output)
+                    parla(f"❌ Errore nav: {str(e)[:150]}", output)
                     try: browser.close()
                     except: pass
                     return
@@ -746,26 +1031,21 @@ REGOLE:
                         except: pass
                         return
 
-                risultato = namespace.get("result") or "Azione completata"
+                risultato = namespace.get("result") or "Completato"
                 parla(f"✅ {risultato}, Padrone~!", output)
-
-                parla("Shaula lascia il browser aperto 12 secondi, Padrone~!", output)
-                time.sleep(12)
-
+                time.sleep(10)
                 try: browser.close()
                 except: pass
-
         except ImportError:
-            parla("❌ Playwright non installato, Padrone~!", output)
+            parla("❌ Playwright non installato!", output)
         except Exception as e:
-            parla(f"❌ Errore navigazione: {str(e)[:150]}", output)
+            parla(f"❌ Errore: {str(e)[:150]}", output)
 
     threading.Thread(target=_esegui, daemon=True).start()
     return True
 
 def estrai_da_sito(url, cosa_estrarre, output):
-    azione = f"vai su {url}, {cosa_estrarre}, poi metti in result cosa hai trovato"
-    return naviga_autonomo(azione, output)
+    return naviga_autonomo(f"vai su {url}, {cosa_estrarre}, metti in result cosa hai trovato", output)
 
 def screenshot_sito(url, output):
     def _thread():
@@ -776,18 +1056,12 @@ def screenshot_sito(url, output):
                 page = browser.new_page(viewport={"width": 1920, "height": 1080})
                 page.goto(url, timeout=30000)
                 page.wait_for_timeout(2500)
-
                 n = f"sito_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-                percorso = os.path.join(desktop(), n)
-                page.screenshot(path=percorso, full_page=True)
-
+                page.screenshot(path=os.path.join(desktop(), n), full_page=True)
                 browser.close()
                 parla(f"✅ Screenshot salvato: {n}", output)
-        except ImportError:
-            parla("❌ Playwright non installato, Padrone~", output)
         except Exception as e:
             parla(f"❌ Errore: {str(e)[:150]}", output)
-
     threading.Thread(target=_thread, daemon=True).start()
     return True
 
@@ -796,90 +1070,54 @@ def screenshot_sito(url, output):
 # ============================================================
 def _genera_pagina_diario(manuale=False):
     if not genai or not CONFIG.get("gemini_api_key"):
-        return None, "⚠️ Serve la API key Gemini per scrivere il diario"
-    key = CONFIG.get("gemini_api_key", "").strip()
-    try: genai.configure(api_key=key)
-    except Exception: pass
+        return None, "⚠️ Serve la API key Gemini"
+    try: genai.configure(api_key=CONFIG["gemini_api_key"].strip())
+    except: pass
 
     giorni = CONFIG.get("diario_ogni_giorni", 3)
     soglia = datetime.datetime.now() - datetime.timedelta(days=giorni)
     conv_recenti = []
     for c in STORICO["conversazioni"]:
         try:
-            data = datetime.datetime.fromisoformat(c["data"])
-            if data >= soglia:
+            if datetime.datetime.fromisoformat(c["data"]) >= soglia:
                 conv_recenti.append(c)
-        except Exception:
-            continue
+        except: continue
 
     if not conv_recenti:
-        return None, "Nessuna conversazione recente da raccontare, Padrone~"
+        return None, "Nessuna conversazione recente"
 
-    testo_conv = ""
-    for c in conv_recenti[-30:]:
-        testo_conv += f"Tu: {c['utente'][:150]}\nShaula: {c['shaula'][:150]}\n"
-
+    testo_conv = "".join(f"Tu: {c['utente'][:150]}\nShaula: {c['shaula'][:150]}\n"
+                        for c in conv_recenti[-30:])
     info_padrone = ""
     if MEMORIA["info"]:
-        info_padrone = "Cose che sai del Padrone: " + json.dumps(MEMORIA["info"], ensure_ascii=False)
+        info_padrone = "Info: " + json.dumps(MEMORIA["info"], ensure_ascii=False)
     if MEMORIA["ricordi"]:
         info_padrone += "\nRicordi: " + "; ".join(MEMORIA["ricordi"][-5:])
 
-    giorni_passati = giorni
-    if DIARIO["ultima_scrittura"]:
-        try:
-            ultima = datetime.datetime.fromisoformat(DIARIO["ultima_scrittura"])
-            giorni_passati = (datetime.datetime.now() - ultima).days
-        except Exception: pass
-
-    tipo = "su richiesta del Padrone" if manuale else f"dopo {giorni_passati} giorni"
-
-    prompt = (
-        f"Sei Shaula di Re:Zero. Stai scrivendo una pagina del tuo diario personale "
-        f"(scritta {tipo}). Il tuo Padrone è l'utente con cui parli.\n\n"
-        f"Ecco cosa è successo in questi giorni:\n{testo_conv}\n\n"
-        f"{info_padrone}\n\n"
-        f"Scrivi una pagina di diario di 100-150 parole in prima persona, "
-        f"con la tua personalità (devota, 'ehehe', '~', emoji 🦂💕✨).\n\n"
-        f"Rispondi ESATTAMENTE in questo formato:\n"
-        f"TITOLO: [un titolo creativo breve]\n"
-        f"UMORE: [felice/triste/entusiasta/nostalgica/annoiata/emozionata]\n"
-        f"VOTO: [numero da 1 a 10]\n"
-        f"CONTENUTO: [il testo della pagina]\n"
-    )
+    tipo = "su richiesta" if manuale else f"dopo {giorni} giorni"
+    prompt = (f"Scrivi pagina di diario (Shaula di Re:Zero) scritta {tipo}.\n"
+              f"Conversazioni:\n{testo_conv}\n{info_padrone}\n\n"
+              f"Formato:\nTITOLO: ...\nUMORE: ...\nVOTO: ...\nCONTENUTO: ...")
 
     try:
-        sys_prompt = ("Sei Shaula di Re:Zero. Chiami l'utente 'Padrone'. "
-                      "Parli in terza persona di te. Usi '~' e 'ehehe' spesso. "
-                      "Rispondi in italiano. Emoji ogni tanto (🦂💕✨).")
-        m = genai.GenerativeModel(MODELLO_ATTIVO or MODELLO_FALLBACK, system_instruction=sys_prompt)
-        r = m.generate_content(prompt)
-        testo = r.text.strip()
+        sys_p = "Sei Shaula. Chiami l'utente 'Padrone'. Usi '~' e 'ehehe'."
+        m = genai.GenerativeModel(MODELLO_ATTIVO or MODELLO_FALLBACK, system_instruction=sys_p)
+        testo = m.generate_content(prompt).text.strip()
     except Exception as e:
-        return None, f"❌ Errore Gemini: {str(e)[:150]}"
+        return None, f"❌ Errore: {str(e)[:150]}"
 
-    titolo = "Una giornata con il Padrone"
-    umore = "felice"
-    voto = 8
-    contenuto = testo
+    titolo, umore, voto, contenuto = "Una giornata", "felice", 8, testo
+    mt = re.search(r"TITOLO:\s*(.+)", testo); titolo = mt.group(1).strip() if mt else titolo
+    mu = re.search(r"UMORE:\s*(\w+)", testo); umore = mu.group(1).strip().lower() if mu else umore
+    mv = re.search(r"VOTO:\s*(\d+)", testo); voto = int(mv.group(1)) if mv else voto
+    mc = re.search(r"CONTENUTO:\s*(.+)", testo, re.DOTALL)
+    contenuto = mc.group(1).strip() if mc else testo
 
-    m_tit = re.search(r"TITOLO:\s*(.+)", testo)
-    if m_tit: titolo = m_tit.group(1).strip()
-    m_um = re.search(r"UMORE:\s*(\w+)", testo)
-    if m_um: umore = m_um.group(1).strip().lower()
-    m_vo = re.search(r"VOTO:\s*(\d+)", testo)
-    if m_vo: voto = int(m_vo.group(1))
-    m_cont = re.search(r"CONTENUTO:\s*(.+)", testo, re.DOTALL)
-    if m_cont: contenuto = m_cont.group(1).strip()
-
-    pagina = {
-        "data": datetime.date.today().isoformat(),
-        "ora": datetime.datetime.now().strftime("%H:%M"),
-        "titolo": titolo, "umore": umore, "voto": voto,
-        "contenuto": contenuto, "messaggi_scambiati": len(conv_recenti),
-        "giorni_passati": giorni_passati, "manuale": manuale
-    }
-
+    pagina = {"data": datetime.date.today().isoformat(),
+              "ora": datetime.datetime.now().strftime("%H:%M"),
+              "titolo": titolo, "umore": umore, "voto": voto,
+              "contenuto": contenuto, "messaggi_scambiati": len(conv_recenti),
+              "giorni_passati": giorni, "manuale": manuale}
     DIARIO["pagine"].append(pagina)
     DIARIO["pagine"] = DIARIO["pagine"][-365:]
     DIARIO["ultima_scrittura"] = datetime.datetime.now().isoformat()
@@ -893,21 +1131,16 @@ def controlla_diario_automatico(output):
     ultima = DIARIO.get("ultima_scrittura", "")
     if ultima:
         try:
-            ultima_dt = datetime.datetime.fromisoformat(ultima)
-            if (datetime.datetime.now() - ultima_dt).days < giorni:
+            if (datetime.datetime.now() - datetime.datetime.fromisoformat(ultima)).days < giorni:
                 return
-        except Exception: pass
-    print(f"📔 Diario: è ora di scrivere")
-    pagina, errore = _genera_pagina_diario(manuale=False)
+        except: pass
+    pagina, _ = _genera_pagina_diario(manuale=False)
     if pagina:
-        parla(f"Padrone~! Shaula ha scritto una pagina del diario! "
-              f"Si intitola '{pagina['titolo']}'! 💕", output)
+        parla(f"Padrone~! Ho scritto '{pagina['titolo']}' nel diario! 💕", output)
 
 def leggi_pagina_diario(pagina, output):
-    testo = (f"📔 {pagina['data']} — {pagina['titolo']}\n"
-             f"Umore: {pagina['umore']} | Voto: {pagina['voto']}/10\n\n"
-             f"{pagina['contenuto']}")
-    parla(testo, output)
+    parla(f"📔 {pagina['data']} — {pagina['titolo']}\n"
+          f"Umore: {pagina['umore']} | Voto: {pagina['voto']}/10\n\n{pagina['contenuto']}", output)
 
 def statistiche_diario():
     if not DIARIO["pagine"]: return "Il diario è vuoto, Padrone~"
@@ -919,58 +1152,46 @@ def statistiche_diario():
         u = p.get("umore", "?")
         umori[u] = umori.get(u, 0) + 1
     umore_top = max(umori, key=umori.get) if umori else "?"
-    return (f"📊 Statistiche Diario:\n"
-            f"• Pagine scritte: {totale}\n"
-            f"• Voto medio: {voto_medio:.1f}/10\n"
-            f"• Umore più frequente: {umore_top}\n"
-            f"• Ultima pagina: {pagine[-1]['data']}")
+    return (f"📊 Diario:\n• Pagine: {totale}\n• Voto medio: {voto_medio:.1f}/10\n"
+            f"• Umore: {umore_top}\n• Ultima: {pagine[-1]['data']}")
 
 # ============================================================
 # WHATSAPP
 # ============================================================
-VK_CODES = {
-    'enter': 0x0D, 'tab': 0x09, 'esc': 0x1B, 'escape': 0x1B,
+VK_CODES = {'enter': 0x0D, 'tab': 0x09, 'esc': 0x1B, 'escape': 0x1B,
     'space': 0x20, 'backspace': 0x08, 'delete': 0x2E,
     'ctrl': 0x11, 'control': 0x11, 'shift': 0x10, 'alt': 0x12,
-    'win': 0x5B, 'windows': 0x5B,
-    'f': 0x46, 'a': 0x41, 'c': 0x43, 'v': 0x56, 'x': 0x58,
-    'd': 0x44, 's': 0x53, 'z': 0x5A, 'w': 0x57, 'q': 0x51,
-    'left': 0x25, 'up': 0x26, 'right': 0x27, 'down': 0x28,
-}
+    'win': 0x5B, 'windows': 0x5B, 'f': 0x46, 'a': 0x41, 'c': 0x43,
+    'v': 0x56, 'x': 0x58, 'd': 0x44, 's': 0x53, 'z': 0x5A,
+    'w': 0x57, 'q': 0x51, 'left': 0x25, 'up': 0x26, 'right': 0x27, 'down': 0x28}
 KEYEVENTF_KEYUP = 0x0002
 
 def _win_key_down(vk): ctypes.windll.user32.keybd_event(vk, 0, 0, 0)
 def _win_key_up(vk): ctypes.windll.user32.keybd_event(vk, 0, KEYEVENTF_KEYUP, 0)
 def _win_press(vk):
     _win_key_down(vk); time.sleep(0.03); _win_key_up(vk)
-
 def _win_combo(vks):
     for vk in vks: _win_key_down(vk); time.sleep(0.02)
     time.sleep(0.05)
     for vk in reversed(vks): _win_key_up(vk); time.sleep(0.02)
-
 def _win_copy_to_clipboard(testo):
     try:
         r = tk.Tk(); r.withdraw()
         r.clipboard_clear(); r.clipboard_append(testo); r.update(); r.destroy()
         return True
-    except Exception: return False
-
+    except: return False
 def _scrivi_universale(testo, backend):
     if backend == "pyautogui": pyautogui.write(testo, interval=0.03)
     elif backend == "keyboard": keyboard.write(testo, delay=0.02)
     else:
-        _win_copy_to_clipboard(testo)
-        time.sleep(0.3)
+        _win_copy_to_clipboard(testo); time.sleep(0.3)
         _win_combo([VK_CODES['ctrl'], VK_CODES['v']])
-
 def _premi_universale(tasto, backend):
     if backend == "pyautogui": pyautogui.press(tasto)
     elif backend == "keyboard": keyboard.press_and_release(tasto)
     else:
         vk = VK_CODES.get(tasto.lower())
         if vk: _win_press(vk)
-
 def _combo_universale(tasti, backend):
     if backend == "pyautogui": pyautogui.hotkey(*tasti)
     elif backend == "keyboard": keyboard.press_and_release("+".join(tasti))
@@ -978,42 +1199,33 @@ def _combo_universale(tasti, backend):
         vks = [VK_CODES.get(t.lower()) for t in tasti]
         vks = [v for v in vks if v]
         if vks: _win_combo(vks)
-
 def _click_campo_messaggio(backend):
     try:
         if pyautogui:
             w, h = pyautogui.size()
-            pyautogui.click(int(w * 0.5), int(h * 0.92))
-            return True
+            pyautogui.click(int(w * 0.5), int(h * 0.92)); return True
         user32 = ctypes.windll.user32
         w = user32.GetSystemMetrics(0); h = user32.GetSystemMetrics(1)
-        x = int(w * 0.5); y = int(h * 0.92)
-        user32.SetCursorPos(x, y)
-        time.sleep(0.1)
-        user32.mouse_event(0x0002, 0, 0, 0, 0)
-        time.sleep(0.05)
-        user32.mouse_event(0x0004, 0, 0, 0, 0)
-        return True
-    except Exception: return False
+        user32.SetCursorPos(int(w * 0.5), int(h * 0.92)); time.sleep(0.1)
+        user32.mouse_event(0x0002, 0, 0, 0, 0); time.sleep(0.05)
+        user32.mouse_event(0x0004, 0, 0, 0, 0); return True
+    except: return False
 
 def invia_whatsapp_shaula(contatto, messaggio_utente, output):
     firma = CONFIG.get("firma_shaula", "Ciao! Io sono Shaula, il mio padrone vorrebbe dirti:")
-    messaggio_finale = f"{firma} {messaggio_utente}" if firma else messaggio_utente
-    if pyautogui: backend = "pyautogui"
-    elif keyboard: backend = "keyboard"
-    else: backend = "winapi"
-    print(f"Backend WhatsApp: {backend}")
+    msg = f"{firma} {messaggio_utente}" if firma else messaggio_utente
+    backend = "pyautogui" if pyautogui else ("keyboard" if keyboard else "winapi")
     parla(f"Shaula apre WhatsApp per {contatto}... 💕", output)
     try:
         try: os.startfile("whatsapp://")
-        except Exception: webbrowser.open("https://web.whatsapp.com")
+        except: webbrowser.open("https://web.whatsapp.com")
         time.sleep(8)
         _combo_universale(["ctrl", "f"], backend); time.sleep(2)
         _scrivi_universale(contatto, backend); time.sleep(3)
         _premi_universale("enter", backend); time.sleep(3)
         _premi_universale("esc", backend); time.sleep(1.5)
         _click_campo_messaggio(backend); time.sleep(1)
-        _scrivi_universale(messaggio_finale, backend); time.sleep(1.5)
+        _scrivi_universale(msg, backend); time.sleep(1.5)
         _premi_universale("enter", backend); time.sleep(0.5)
         parla(f"Messaggio inviato a {contatto}, Padrone~! 💕", output)
         return True
@@ -1027,7 +1239,7 @@ def invia_whatsapp_shaula(contatto, messaggio_utente, output):
 def invia_email(destinatario, oggetto, corpo):
     user = CONFIG.get("gmail_user", "").strip()
     pwd = CONFIG.get("gmail_password", "").strip()
-    if not user or not pwd: return "⚠️ Configura Gmail (pulsante 📧)"
+    if not user or not pwd: return "⚠️ Configura Gmail"
     try:
         msg = MIMEMultipart()
         msg['From'] = user; msg['To'] = destinatario; msg['Subject'] = oggetto
@@ -1037,7 +1249,7 @@ def invia_email(destinatario, oggetto, corpo):
         server.send_message(msg); server.quit()
         return f"✅ Email inviata a {destinatario}"
     except Exception as e:
-        return f"❌ Errore invio: {str(e)[:150]}"
+        return f"❌ Errore: {str(e)[:150]}"
 
 # ============================================================
 # AUDIO
@@ -1051,7 +1263,7 @@ def cambia_volume(delta):
             attuale = volume.GetMasterVolumeLevelScalar()
             volume.SetMasterVolumeLevelScalar(max(0.0, min(1.0, attuale + delta)), None)
             return True
-        except Exception: pass
+        except: pass
     if keyboard:
         for _ in range(abs(int(delta * 50))):
             keyboard.press_and_release('volume up' if delta > 0 else 'volume down')
@@ -1064,9 +1276,8 @@ def toggle_mute():
             devices = AudioUtilities.GetSpeakers()
             interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
             volume = cast(interface, POINTER(IAudioEndpointVolume))
-            volume.SetMute(not volume.GetMute(), None)
-            return True
-        except Exception: pass
+            volume.SetMute(not volume.GetMute(), None); return True
+        except: pass
     if keyboard: keyboard.press_and_release('volume mute'); return True
     return False
 
@@ -1079,7 +1290,7 @@ def cambia_volume_app(nome_app, delta):
                 v.SetMasterVolume(max(0.0, min(1.0, v.GetMasterVolume() + delta)), None)
                 return True
         return False
-    except Exception: return False
+    except: return False
 
 def muta_app(nome_app):
     if not PYCAW_OK: return False
@@ -1089,26 +1300,26 @@ def muta_app(nome_app):
                 s.SimpleAudioVolume.SetMute(not s.SimpleAudioVolume.GetMute(), None)
                 return True
         return False
-    except Exception: return False
+    except: return False
 
 def lista_app_audio():
     if not PYCAW_OK: return []
     try: return list(set(s.Process.name() for s in AudioUtilities.GetAllSessions() if s.Process))
-    except Exception: return []
+    except: return []
 
 def media_key(tasto):
     if keyboard:
         try: keyboard.press_and_release(tasto); return True
-        except Exception: pass
+        except: pass
     return False
 
 # ============================================================
 # PROCESSI
 # ============================================================
 def lista_processi(ordine="ram", limite=10):
-    if not psutil: return "psutil non disponibile"
+    if not psutil: return "psutil mancante"
     try:
-        procs = list(psutil.process_iter(['pid', 'name', 'memory_percent', 'cpu_percent']))
+        procs = list(psutil.process_iter(['name', 'memory_percent', 'cpu_percent']))
         if ordine == "ram":
             procs.sort(key=lambda x: x.info.get('memory_percent', 0) or 0, reverse=True)
         else:
@@ -1124,7 +1335,7 @@ def chiudi_processo(nome):
         try:
             if p.info['name'] and nome.lower() in p.info['name'].lower():
                 p.terminate(); chiusi += 1
-        except Exception: continue
+        except: continue
     return chiusi > 0
 
 def pulisci_temp():
@@ -1136,34 +1347,33 @@ def pulisci_temp():
             try:
                 if os.path.isfile(percorso): os.remove(percorso); eliminati += 1
                 elif os.path.isdir(percorso): shutil.rmtree(percorso, ignore_errors=True); eliminati += 1
-            except Exception: errori += 1
+            except: errori += 1
         return eliminati, errori
     except Exception as e: return 0, str(e)
 
 def info_disco_dettagliato():
-    if not psutil: return "psutil non disponibile"
+    if not psutil: return "psutil mancante"
     try:
         return "\n".join(f"{p.device}: {psutil.disk_usage(p.mountpoint).percent}% usato"
                          for p in psutil.disk_partitions())
-    except Exception: return "Errore"
+    except: return "Errore"
 
 def modalita_risparmio():
     try: subprocess.run("powercfg /setactive a1841308-3541-4fab-bc81-f71556f20b4a", shell=True, capture_output=True); return True
-    except Exception: return False
-
+    except: return False
 def modalita_prestazioni():
     try: subprocess.run("powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c", shell=True, capture_output=True); return True
-    except Exception: return False
-
+    except: return False
 def modalita_bilanciata():
     try: subprocess.run("powercfg /setactive 381b4222-f694-41f0-9685-ff5bb260df2e", shell=True, capture_output=True); return True
-    except Exception: return False
+    except: return False
 
 # ============================================================
 # AGENDA E NOTE
 # ============================================================
 def aggiungi_evento(titolo, quando):
-    AGENDA["eventi"].append({"titolo": titolo, "quando": quando, "creato": datetime.datetime.now().isoformat()})
+    AGENDA["eventi"].append({"titolo": titolo, "quando": quando,
+                             "creato": datetime.datetime.now().isoformat()})
     salva_json(AGENDA_FILE, AGENDA); return True
 
 def eventi_oggi():
@@ -1172,26 +1382,27 @@ def eventi_oggi():
 
 def aggiungi_nota(testo, categoria="generale"):
     if categoria not in NOTE["liste"]: NOTE["liste"][categoria] = []
-    NOTE["liste"][categoria].append({"testo": testo, "data": datetime.datetime.now().isoformat()})
+    NOTE["liste"][categoria].append({"testo": testo,
+                                     "data": datetime.datetime.now().isoformat()})
     salva_json(NOTE_FILE, NOTE); return True
 
 def leggi_lista(categoria="generale"):
     return NOTE["liste"].get(categoria, [])
 
 def avvia_timer(secondi, descrizione, output):
-    def _thread():
+    def _t():
         time.sleep(secondi)
         parla(f"Padrone~! È ora! {descrizione}", output)
-    threading.Thread(target=_thread, daemon=True).start()
+    threading.Thread(target=_t, daemon=True).start()
 
 # ============================================================
 # VISIONE
 # ============================================================
 def analizza_schermo(output):
     if not PIL_ImageGrab:
-        parla("Pillow non installato, Padrone~", output); return
+        parla("Pillow non installato!", output); return
     if not genai or not CONFIG.get("gemini_api_key"):
-        parla("Serve la API key Gemini, Padrone~", output); return
+        parla("Serve la API key Gemini!", output); return
     try:
         img = PIL_ImageGrab.grab()
         p = os.path.join(BASE_DIR, "_temp_screen.png")
@@ -1199,7 +1410,7 @@ def analizza_schermo(output):
         from PIL import Image as _PILImage
         img_pil = _PILImage.open(p)
         vision_model = genai.GenerativeModel(MODELLO_ATTIVO or MODELLO_FALLBACK)
-        prompt = "Descrivi cosa vedi in massimo 3 frasi con la personalità di Shaula. Se c'è testo importante, leggilo."
+        prompt = "Descrivi cosa vedi in 3 frasi con personalità Shaula. Leggi testo importante."
         risposta = vision_model.generate_content([prompt, img_pil])
         parla(risposta.text, output)
         try: os.remove(p)
@@ -1227,83 +1438,105 @@ def esegui(comando, output):
 
     estrai_info_automatiche(cl, output)
 
+    # ============================================================
+    # SCACCHI
+    # ============================================================
+    if any(p in c for p in ["gioca a scacchi", "giochiamo a scacchi", "partita a scacchi",
+                              "apri scacchi", "avvia scacchi"]):
+        # Determina modo
+        if "contro di me" in c or "con me" in c or "insieme a me" in c:
+            avvia_scacchi("vs_me", output)
+        elif "da sola" in c or "auto" in c or "contro se stessa" in c or "sola" in c:
+            avvia_scacchi("auto", output)
+        else:
+            # Default: contro di te
+            avvia_scacchi("vs_me", output)
+        return True
+
+    if "livello scacchi" in c:
+        for liv in ["facile", "medio", "difficile", "maestro"]:
+            if liv in c:
+                imposta_livello_scacchi(liv, output); return True
+        parla("Livelli: facile, medio, difficile, maestro", output); return True
+
+    if "motore scacchi" in c:
+        if "stockfish" in c:
+            imposta_motore_scacchi("stockfish", output); return True
+        elif "interno" in c:
+            imposta_motore_scacchi("interno", output); return True
+        parla("Motori: interno, stockfish", output); return True
+
     # ---- STATO NAVIGAZIONI ----
     if "navigazioni" in c and any(w in c for w in ["quante", "stato", "limite", "rimaste", "restano"]):
-        parla(stato_navigazioni(), output)
-        return True
+        parla(stato_navigazioni(), output); return True
 
     if "resetta" in c and "navigazioni" in c:
         CONFIG["navigazioni_usate_oggi"] = 0
         CONFIG["navigazioni_data"] = datetime.date.today().isoformat()
         salva_json(CONFIG_FILE, CONFIG)
-        parla("Contatore navigazioni resettato, Padrone~! Ehehe~", output)
-        return True
+        parla("Contatore navigazioni resettato!", output); return True
 
     if "cambia limite" in c and "navigazioni" in c:
         m = re.search(r"(\d+)", c)
         if m:
-            nuovo_limite = int(m.group(1))
-            CONFIG["navigazioni_limite_giorno"] = nuovo_limite
+            CONFIG["navigazioni_limite_giorno"] = int(m.group(1))
             salva_json(CONFIG_FILE, CONFIG)
-            parla(f"Limite navigazioni impostato a {nuovo_limite} al giorno, Padrone~!", output)
+            parla(f"Limite: {m.group(1)}/giorno", output)
         else:
-            parla("Dimmi un numero: 'cambia limite navigazioni a 10'", output)
+            parla("Dimmi: 'cambia limite navigazioni a 10'", output)
         return True
 
     # ---- NAVIGAZIONE AUTONOMA ----
     m = re.search(r"^naviga su\s+(.+?)\s+e\s+(.+)$", cl, re.IGNORECASE)
     if m:
-        sito = m.group(1).strip()
-        resto = m.group(2).strip()
-        threading.Thread(target=naviga_autonomo, args=(f"vai su {sito} e {resto}", output), daemon=True).start()
+        threading.Thread(target=naviga_autonomo,
+                         args=(f"vai su {m.group(1).strip()} e {m.group(2).strip()}", output),
+                         daemon=True).start()
         return True
 
     m = re.search(r"^naviga\s+(https?://[^\s]+)\s+e\s+(.+)$", cl, re.IGNORECASE)
     if m:
-        url = m.group(1).strip()
-        resto = m.group(2).strip()
-        threading.Thread(target=naviga_autonomo, args=(f"vai su {url} e {resto}", output), daemon=True).start()
+        threading.Thread(target=naviga_autonomo,
+                         args=(f"vai su {m.group(1).strip()} e {m.group(2).strip()}", output),
+                         daemon=True).start()
         return True
 
     m = re.search(r"^estrai\s+(.+?)\s+da\s+(https?://[^\s]+)$", cl, re.IGNORECASE)
     if m:
-        cosa = m.group(1).strip()
-        url = m.group(2).strip()
-        threading.Thread(target=estrai_da_sito, args=(url, cosa, output), daemon=True).start()
+        threading.Thread(target=estrai_da_sito,
+                         args=(m.group(2).strip(), m.group(1).strip(), output),
+                         daemon=True).start()
         return True
 
     m = re.search(r"^screenshot (?:di|del sito)\s+(https?://[^\s]+)$", cl, re.IGNORECASE)
     if m:
-        screenshot_sito(m.group(1).strip(), output)
-        return True
+        screenshot_sito(m.group(1).strip(), output); return True
 
     # ---- DIARIO ----
     if "scrivi" in c and "diario" in c:
-        parla("Shaula prende la penna e scrive, Padrone~... 📔", output)
+        parla("Shaula scrive, Padrone~... 📔", output)
         def _s():
-            pagina, errore = _genera_pagina_diario(manuale=True)
-            if pagina:
-                parla(f"Fatto, Padrone~! Ho scritto '{pagina['titolo']}'! Voto: {pagina['voto']}/10! 💕", output)
-            else:
-                parla(errore or "Non riesco a scrivere, Padrone~", output)
+            p, e = _genera_pagina_diario(manuale=True)
+            if p: parla(f"Fatto! '{p['titolo']}' Voto: {p['voto']}/10! 💕", output)
+            else: parla(e or "Non riesco, Padrone~", output)
         threading.Thread(target=_s, daemon=True).start()
         return True
     if ("leggi" in c or "mostra" in c or "apri" in c) and "diario" in c:
         if not DIARIO["pagine"]:
-            parla("Il diario è ancora vuoto, Padrone~!", output); return True
+            parla("Diario vuoto!", output); return True
         leggi_pagina_diario(DIARIO["pagine"][-1], output); return True
     if "diario di ieri" in c:
         if len(DIARIO["pagine"]) >= 2: leggi_pagina_diario(DIARIO["pagine"][-2], output)
-        else: parla("Non ho abbastanza pagine, Padrone~", output)
+        else: parla("Non ho abbastanza pagine", output)
         return True
-    if "statistiche diario" in c or ("statistiche" in c and "diario" in c):
+    if "statistiche diario" in c:
         parla(statistiche_diario(), output); return True
     if "cancella diario" in c or "azzera diario" in c:
         DIARIO["pagine"] = []; DIARIO["ultima_scrittura"] = ""
         salva_json(DIARIO_FILE, DIARIO)
-        parla("Diario azzerato, Padrone~!", output); return True
+        parla("Diario azzerato!", output); return True
     if "quante pagine" in c and "diario" in c:
-        parla(f"Ho scritto {len(DIARIO['pagine'])} pagine, Padrone~! 💕", output); return True
+        parla(f"{len(DIARIO['pagine'])} pagine!", output); return True
 
     # ---- MODALITÀ ----
     if "modalità" in c or "modalita" in c:
@@ -1311,25 +1544,23 @@ def esegui(comando, output):
             if mod in c:
                 CONFIG["modalita"] = mod; salva_json(CONFIG_FILE, CONFIG)
                 ricarica_gemini()
-                parla(f"Shaula passa in modalità {mod}, Padrone~!", output); return True
+                parla(f"Modalità {mod}!", output); return True
         parla("Modalità: normale, tsundere, yandere, seria", output); return True
 
     # ---- MEMORIA ----
     if c.startswith("ricorda che"):
         MEMORIA["ricordi"].append(cl[11:].strip())
         salva_json(MEMORIA_FILE, MEMORIA)
-        parla("Annotato, Padrone~!", output); return True
+        parla("Annotato!", output); return True
     if "cosa ricordi" in c or "cosa sai di me" in c:
         msg = ""
-        if MEMORIA["info"]:
-            msg += "Info: " + ", ".join(f"{k}={v}" for k, v in MEMORIA["info"].items()) + ". "
-        if MEMORIA["ricordi"]:
-            msg += "Ricordi: " + "; ".join(MEMORIA["ricordi"][-5:])
-        parla(msg or "Non ricordo nulla, Padrone~", output); return True
+        if MEMORIA["info"]: msg += "Info: " + ", ".join(f"{k}={v}" for k, v in MEMORIA["info"].items()) + ". "
+        if MEMORIA["ricordi"]: msg += "Ricordi: " + "; ".join(MEMORIA["ricordi"][-5:])
+        parla(msg or "Non ricordo nulla", output); return True
     if "dimentica tutto" in c:
         MEMORIA = {"ricordi": [], "preferenze": {}, "info": {}}
         salva_json(MEMORIA_FILE, MEMORIA)
-        parla("Memoria azzerata, Padrone~", output); return True
+        parla("Memoria azzerata!", output); return True
 
     # ---- WHATSAPP ----
     verbi_wa = r"(?:dì|di|dici|manda|invia|scrivi|messaggio)"
@@ -1347,7 +1578,7 @@ def esegui(comando, output):
 
     if "apri whatsapp" in c or c == "whatsapp":
         try: os.startfile("whatsapp://"); parla("Apro WhatsApp!", output)
-        except Exception: webbrowser.open("https://web.whatsapp.com"); parla("Apro WhatsApp Web!", output)
+        except: webbrowser.open("https://web.whatsapp.com"); parla("Apro WhatsApp Web!", output)
         return True
 
     # ---- PC AVANZATO ----
@@ -1358,20 +1589,20 @@ def esegui(comando, output):
     if c.startswith("chiudi ") and ("processo" in c or "programma" in c):
         nome = cl.replace("chiudi processo", "").replace("chiudi programma", "").strip()
         if nome and chiudi_processo(nome): parla(f"Chiuso {nome}!", output)
-        else: parla(f"Processo '{nome}' non trovato", output)
+        else: parla(f"'{nome}' non trovato", output)
         return True
     if "info disco" in c or "spazio disco" in c:
         parla("Info dischi:", output); parla(info_disco_dettagliato(), output); return True
     if "pulisci" in c and ("temp" in c or "temporanei" in c):
         parla("Pulisco...", output)
-        eliminati, _ = pulisci_temp()
-        parla(f"Eliminati {eliminati} file!", output); return True
-    if "risparmio" in c: modalita_risparmio(); parla("Risparmio energetico attivo!", output); return True
-    if "prestazioni" in c or "performance" in c: modalita_prestazioni(); parla("Prestazioni elevate!", output); return True
+        e, _ = pulisci_temp()
+        parla(f"Eliminati {e} file!", output); return True
+    if "risparmio" in c: modalita_risparmio(); parla("Risparmio energetico!", output); return True
+    if "prestazioni" in c: modalita_prestazioni(); parla("Prestazioni elevate!", output); return True
     if "bilanciata" in c: modalita_bilanciata(); parla("Modalità bilanciata!", output); return True
     if "app audio" in c:
         apps = lista_app_audio()
-        parla("App con audio: " + (", ".join(apps) if apps else "nessuna"), output); return True
+        parla("App audio: " + (", ".join(apps) if apps else "nessuna"), output); return True
 
     m = re.search(r"(alza|abbassa|muta|silenzia)\s+(?:il volume di\s+)?(\w+)", c)
     if m and m.group(2) not in ["volume"]:
@@ -1391,10 +1622,9 @@ def esegui(comando, output):
     if "email" in c or "mail" in c:
         if "invia" in c or "manda" in c:
             m = re.search(r"([\w.+-]+@[\w.-]+)\s+(?:oggetto\s+)?(.+?)(?:\s+corpo\s+(.+))?$", cl)
-            if m:
-                parla(invia_email(m.group(1), m.group(2).strip() or "Messaggio", (m.group(3) or m.group(2)).strip()), output)
-            else:
-                parla("Formato: 'invia email a x@y.com oggetto Ciao corpo Testo'", output)
+            if m: parla(invia_email(m.group(1), m.group(2).strip() or "Messaggio",
+                                     (m.group(3) or m.group(2)).strip()), output)
+            else: parla("Formato: 'invia email a x@y.com oggetto Ciao corpo Testo'", output)
             return True
         webbrowser.open("https://mail.google.com"); parla("Apro Gmail!", output); return True
 
@@ -1402,11 +1632,11 @@ def esegui(comando, output):
         m = re.search(r"evento\s+(.+?)\s+(?:il|per il|domani|oggi)\s*(.*)", cl, re.IGNORECASE)
         if m:
             aggiungi_evento(m.group(1).strip(), m.group(2).strip() or datetime.date.today().isoformat())
-            parla(f"Evento '{m.group(1).strip()}' aggiunto!", output)
+            parla(f"Evento aggiunto!", output)
         return True
     if "cosa ho oggi" in c or "eventi oggi" in c:
-        eventi = eventi_oggi()
-        parla("Oggi hai:\n" + "\n".join(f"- {e['titolo']}" for e in eventi) if eventi else "Nessun evento oggi", output)
+        e = eventi_oggi()
+        parla("Oggi: " + "\n".join(f"- {x['titolo']}" for x in e) if e else "Nessun evento", output)
         return True
 
     if "aggiungi a lista" in c:
@@ -1419,8 +1649,8 @@ def esegui(comando, output):
     if "leggi lista" in c:
         m = re.search(r"lista\s+(\w+)", c)
         cat = m.group(1) if m else "generale"
-        elementi = leggi_lista(cat)
-        parla(f"Lista {cat}:\n" + "\n".join(f"- {e['testo']}" for e in elementi[-10:]) if elementi else f"Lista {cat} vuota", output)
+        el = leggi_lista(cat)
+        parla(f"Lista {cat}:\n" + "\n".join(f"- {e['testo']}" for e in el[-10:]) if el else f"Lista {cat} vuota", output)
         return True
 
     if c.startswith("traduci"):
@@ -1497,8 +1727,8 @@ def esegui(comando, output):
         elif "min" in unit: sec, utxt = val * 60, f"{val} minuti"
         else: sec, utxt = val * 3600, f"{val} ore"
         avvia_timer(sec, f"Timer di {utxt} scaduto!", output)
-        parla(f"Timer di {utxt} avviato!", output); return True
-    if "timer" in c: parla("Per quanto tempo? 'timer 5 minuti'", output); return True
+        parla(f"Timer {utxt} avviato!", output); return True
+    if "timer" in c: parla("Per quanto? 'timer 5 minuti'", output); return True
 
     m = re.search(r"svegliami alle (\d{1,2})[:.]?(\d{2})?", c)
     if m:
@@ -1506,23 +1736,23 @@ def esegui(comando, output):
         adesso = datetime.datetime.now()
         target = adesso.replace(hour=ora, minute=minuto, second=0, microsecond=0)
         if target <= adesso: target += datetime.timedelta(days=1)
-        sec = (target - adesso).total_seconds()
-        avvia_timer(sec, f"Sveglia! Sono le {ora}:{minuto:02d}!", output)
+        avvia_timer((target - adesso).total_seconds(),
+                    f"Sveglia! Sono le {ora}:{minuto:02d}!", output)
         parla(f"Ti sveglierò alle {ora}:{minuto:02d}", output); return True
-    if "svegliami" in c: parla("A che ora? 'svegliami alle 7:30'", output); return True
+    if "svegliami" in c: parla("A che ora?", output); return True
 
     # ---- SCHERMO ----
     if "screenshot" in c and "http" not in c:
         if PIL_ImageGrab:
             n = f"screenshot_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
             PIL_ImageGrab.grab().save(os.path.join(desktop(), n))
-            parla(f"Screenshot salvato: {n}", output)
+            parla(f"Screenshot: {n}", output)
         return True
     if "cosa vedi" in c or "leggi schermo" in c:
         threading.Thread(target=analizza_schermo, args=(output,), daemon=True).start(); return True
     if "minimizza tutto" in c or "mostra desktop" in c:
         try: _win_combo([VK_CODES['win'], VK_CODES['d']])
-        except Exception:
+        except:
             if keyboard: keyboard.press_and_release('windows+d')
         parla("Fatto!", output); return True
     if "chiudi finestra" in c:
@@ -1532,8 +1762,8 @@ def esegui(comando, output):
         try:
             subprocess.run(["reg", "add", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
                 "/v", "AppsUseLightTheme", "/t", "REG_DWORD", "/d", "0", "/f"], capture_output=True)
-            parla("Tema scuro attivato!", output)
-        except Exception: pass
+            parla("Tema scuro!", output)
+        except: pass
         return True
 
     # ---- UTILITY ----
@@ -1542,7 +1772,7 @@ def esegui(comando, output):
         try:
             r = eval(m.group(1).replace("%", "/100*").replace(",", "."))
             parla(f"Fa {r}!", output)
-        except Exception: parla("Non riesco a calcolare", output)
+        except: parla("Non riesco a calcolare", output)
         return True
     if "quanti giorni" in c and "natale" in c:
         oggi = datetime.date.today()
@@ -1574,7 +1804,7 @@ def esegui(comando, output):
                 if len(trovati) >= 20: break
                 for f in files:
                     if n in f.lower(): trovati.append(os.path.join(root, f))
-            parla(f"Trovati {len(trovati)} file! Primo: {trovati[0]}" if trovati else "Nessun file trovato", output)
+            parla(f"Trovati {len(trovati)}! Primo: {trovati[0]}" if trovati else "Nessun file", output)
         return True
 
     # ---- APRI PROGRAMMI ----
@@ -1586,14 +1816,14 @@ def esegui(comando, output):
             try:
                 subprocess.Popen(PROGRAMMI_COMUNI[prog_low], shell=True)
                 parla(f"Apro {prog}!", output)
-            except Exception: parla(f"Non riesco ad aprire {prog}", output)
+            except: parla(f"Non riesco ad aprire {prog}", output)
             return True
         if prog_low.startswith("http") or ("." in prog_low and " " not in prog_low):
             url = prog if prog.startswith("http") else "https://" + prog
             webbrowser.open(url); parla(f"Apro {url}!", output); return True
         try:
             subprocess.Popen(prog, shell=True); parla(f"Apro {prog}!", output)
-        except Exception: parla(f"Non riesco ad aprire '{prog}'", output)
+        except: parla(f"Non riesco ad aprire '{prog}'", output)
         return True
 
     # ---- SISTEMA ----
@@ -1609,11 +1839,11 @@ def esegui(comando, output):
     if "che giorno" in c:
         parla(f"Oggi è {datetime.datetime.now().strftime('%A %d %B %Y')}", output); return True
     if "blocca pc" in c:
-        parla("Blocco il PC!", output); ctypes.windll.user32.LockWorkStation(); return True
+        parla("Blocco!", output); ctypes.windll.user32.LockWorkStation(); return True
     if "spegni il pc" in c or "spegni pc" in c:
-        parla("Spengo tra 10 secondi!", output); os.system("shutdown /s /t 10"); return True
+        parla("Spengo tra 10s!", output); os.system("shutdown /s /t 10"); return True
     if "riavvia" in c and "pc" in c:
-        parla("Riavvio tra 10 secondi!", output); os.system("shutdown /r /t 10"); return True
+        parla("Riavvio tra 10s!", output); os.system("shutdown /r /t 10"); return True
     if "annulla spegnimento" in c:
         os.system("shutdown /a"); parla("Annullato!", output); return True
 
@@ -1645,7 +1875,7 @@ def esegui(comando, output):
             if hasattr(plugins, "esegui"):
                 r = plugins.esegui(c, cl, CONFIG, MEMORIA, output)
                 if r: return True
-        except Exception: pass
+        except: pass
 
     if sembra_comando(c):
         parla(f"Shaula non ha capito '{comando}', Padrone~!", output); return True
@@ -1671,11 +1901,11 @@ class WakeWord(threading.Thread):
 class GUI:
     def __init__(self, root):
         self.root = root
-        root.title("🦂 S.H.A.U.L.A. v6.2")
+        root.title("🦂 S.H.A.U.L.A. v7.0")
         root.geometry("950x720")
         root.configure(bg="#1a1a2e")
 
-        tk.Label(root, text="🦂  S.H.A.U.L.A. v6.2  🦂",
+        tk.Label(root, text="🦂  S.H.A.U.L.A. v7.0  🦂",
                  font=("Segoe UI", 22, "bold"), bg="#1a1a2e", fg="#ff6b9d").pack(pady=(12, 0))
         tk.Label(root, text="La tua assistente devota, Padrone~!",
                  font=("Segoe UI", 10, "italic"), bg="#1a1a2e", fg="#a0a0c0").pack()
@@ -1696,6 +1926,8 @@ class GUI:
                   fg="#1a1a2e", font=("Segoe UI", 10, "bold"), relief=tk.FLAT, padx=15).pack(side=tk.LEFT, padx=5)
         tk.Button(f, text="📔 Diario", command=self.apri_diario, bg="#a87fff",
                   fg="white", font=("Segoe UI", 10, "bold"), relief=tk.FLAT, padx=15).pack(side=tk.LEFT, padx=5)
+        tk.Button(f, text="♟️ Scacchi", command=self.apri_scacchi, bg="#7fdb8f",
+                  fg="#1a1a2e", font=("Segoe UI", 10, "bold"), relief=tk.FLAT, padx=15).pack(side=tk.LEFT, padx=5)
 
         f2 = tk.Frame(root, bg="#1a1a2e"); f2.pack(fill=tk.X, padx=15, pady=(0, 8))
         self.wake_var = tk.BooleanVar(value=CONFIG["wake_word_attivo"])
@@ -1725,12 +1957,14 @@ class GUI:
         n_pagine = len(DIARIO["pagine"])
         if n_pagine > 0:
             ultima = DIARIO["pagine"][-1]
-            self.scrivi(f"📔 Diario: {n_pagine} pagine | Ultima: {ultima['data']} — '{ultima['titolo']}'\n")
-        else:
-            self.scrivi("📔 Diario: ancora vuoto. Scriverò tra poco! 🦂\n")
+            self.scrivi(f"📔 Diario: {n_pagine} pagine | Ultima: {ultima['data']}\n")
 
-        # Stato navigazioni
         self.scrivi(f"🌐 {stato_navigazioni()}\n")
+
+        if chess:
+            self.scrivi("♟️ Scacchi: ✅ pronti (comando: 'gioca a scacchi')\n")
+        else:
+            self.scrivi("♟️ Scacchi: ❌ libreria 'chess' mancante\n")
 
         try:
             from playwright.sync_api import sync_playwright
@@ -1738,11 +1972,11 @@ class GUI:
         except ImportError:
             self.scrivi("🌐 Navigazione: ❌ Playwright non installato\n")
 
-        self.scrivi("\n💡 Comandi navigazione:\n")
-        self.scrivi("   'naviga su google e cerca meteo roma'\n")
-        self.scrivi("   'quante navigazioni ho fatto?'\n")
-        self.scrivi("   'cambia limite navigazioni a 10'\n")
-        self.scrivi("   'resetta navigazioni'\n\n")
+        self.scrivi("\n💡 Comandi scacchi:\n")
+        self.scrivi("   'gioca a scacchi' → partita contro di te\n")
+        self.scrivi("   'gioca a scacchi da sola' → auto-partita\n")
+        self.scrivi("   'livello scacchi maestro' → cambia difficoltà\n")
+        self.scrivi("   'motore scacchi stockfish' → usa Stockfish\n\n")
 
         threading.Thread(target=lambda: parla("Shaula è pronta, Padrone~!"), daemon=True).start()
         self.wake = None
@@ -1763,22 +1997,22 @@ class GUI:
 
     def output(self, t): self.root.after(0, lambda: self.scrivi(t))
 
+    def apri_scacchi(self):
+        avvia_scacchi("vs_me", self.output)
+
     def apri_diario(self):
         if not DIARIO["pagine"]:
-            self.scrivi("📔 Il diario è ancora vuoto!\n"); return
+            self.scrivi("📔 Il diario è vuoto!\n"); return
         win = tk.Toplevel(self.root)
-        win.title("📔 Diario di Shaula")
-        win.geometry("700x600"); win.configure(bg="#1a1a2e")
+        win.title("📔 Diario"); win.geometry("700x600"); win.configure(bg="#1a1a2e")
         tk.Label(win, text="📔 Diario di Shaula", font=("Segoe UI", 16, "bold"),
                  bg="#1a1a2e", fg="#ff6b9d").pack(pady=10)
         txt = scrolledtext.ScrolledText(win, wrap=tk.WORD, font=("Consolas", 10),
                                         bg="#0f0f1e", fg="#e0e0ff")
         txt.pack(fill=tk.BOTH, expand=True, padx=15, pady=10)
         for p in reversed(DIARIO["pagine"][-20:]):
-            txt.insert(tk.END, f"\n{'='*60}\n")
-            txt.insert(tk.END, f"📅 {p['data']} — {p['titolo']}\n")
-            txt.insert(tk.END, f"Umore: {p['umore']} | Voto: {p['voto']}/10\n\n")
-            txt.insert(tk.END, f"{p['contenuto']}\n")
+            txt.insert(tk.END, f"\n{'='*60}\n📅 {p['data']} — {p['titolo']}\n"
+                               f"Umore: {p['umore']} | Voto: {p['voto']}/10\n\n{p['contenuto']}\n")
         txt.config(state=tk.DISABLED)
 
     def imposta_api_key(self):
@@ -1821,7 +2055,7 @@ class GUI:
         if self.wake_var.get():
             if not self.wake:
                 self.wake = WakeWord(self._wake_cb); self.wake.start()
-            self.scrivi(f"👂 Wake word attiva: di' '{CONFIG['wake_word']}'\n")
+            self.scrivi(f"👂 Wake word: '{CONFIG['wake_word']}'\n")
         else:
             if self.wake: self.wake.stop(); self.wake = None
             self.scrivi("💤 Wake word disattivata.\n")
