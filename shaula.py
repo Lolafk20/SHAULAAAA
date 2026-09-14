@@ -1,5 +1,5 @@
 # ============================================================
-# S.H.A.U.L.A. v6.1 - Navigazione autonoma human-like
+# S.H.A.U.L.A. v6.2 - Navigazione human-like + limite giornaliero
 # ============================================================
 import os, sys, json, time, shutil, datetime, subprocess
 import threading, webbrowser, ctypes, random, re, glob
@@ -98,7 +98,10 @@ CONFIG = carica_json(CONFIG_FILE, {
     "firma_shaula": "Ciao! Io sono Shaula, il mio padrone vorrebbe dirti:",
     "diario_attivo": True,
     "diario_ogni_giorni": 3,
-    "navigazione_attiva": True
+    "navigazione_attiva": True,
+    "navigazioni_limite_giorno": 5,
+    "navigazioni_usate_oggi": 0,
+    "navigazioni_data": ""
 })
 MEMORIA = carica_json(MEMORIA_FILE, {"ricordi": [], "preferenze": {}, "info": {}})
 STORICO = carica_json(STORICO_FILE, {"conversazioni": []})
@@ -151,7 +154,7 @@ VERBI_COMANDO = [
     "screenshot", "converti", "traduci", "riassumi", "ricorda", "dimentica",
     "modalità", "modalita", "processi", "pulisci", "email", "mail", "agenda",
     "evento", "nota", "lista", "whatsapp", "dì", "di", "dici", "manda", "invia",
-    "messaggio", "diario", "naviga", "estrai"
+    "messaggio", "diario", "naviga", "estrai", "navigazioni", "resetta", "cambia"
 ]
 
 def sembra_comando(testo):
@@ -410,7 +413,6 @@ def _attendi_risoluzione_captcha(page, output, timeout=120):
     return False
 
 def _mouse_umano(page, x, y):
-    """Muovi il mouse con curva di Bézier come un umano."""
     try:
         x0 = _rnd.randint(200, 800)
         y0 = _rnd.randint(200, 600)
@@ -455,7 +457,6 @@ def _click_umano(page, x, y):
     page.mouse.click(x, y)
 
 def _scrivi_umano(page, selettore, testo):
-    """Scrivi con velocità variabile e micro-errori."""
     try:
         elem = page.query_selector(selettore)
         if not elem:
@@ -529,6 +530,33 @@ def _muovi_e_clicca_umano(page, testo_selettore=None, selettore=None):
         print(f"Errore click umano: {e}")
         return False
 
+# ============================================================
+# STATO LIMITE NAVIGAZIONI
+# ============================================================
+def stato_navigazioni():
+    """Restituisce lo stato del limite navigazioni."""
+    oggi = datetime.date.today().isoformat()
+    data_ultimo = CONFIG.get("navigazioni_data", "")
+    limite = CONFIG.get("navigazioni_limite_giorno", 5)
+
+    if data_ultimo != oggi:
+        return f"🔄 Limite resettato per oggi! 0/{limite} navigazioni usate."
+
+    usate = CONFIG.get("navigazioni_usate_oggi", 0)
+    rimaste = limite - usate
+
+    if rimaste <= 0:
+        return f"🚫 Limite raggiunto! {usate}/{limite} navigazioni oggi. Reset domani."
+    elif rimaste <= 1:
+        return f"⚠️ {usate}/{limite} navigazioni usate. Ne resta solo 1!"
+    elif rimaste <= 2:
+        return f"⚠️ {usate}/{limite} navigazioni usate. Ne restano {rimaste}."
+    else:
+        return f"✅ {usate}/{limite} navigazioni usate. Ne restano {rimaste}."
+
+# ============================================================
+# NAVIGAZIONE AUTONOMA (con limite giornaliero)
+# ============================================================
 def naviga_autonomo(azione, output):
     if not CONFIG.get("navigazione_attiva", True):
         parla("La navigazione è disattivata, Padrone~!", output)
@@ -538,7 +566,42 @@ def naviga_autonomo(azione, output):
         parla("⚠️ Serve la API key Gemini, Padrone~", output)
         return False
 
-    parla(f"Shaula naviga: '{azione}'... 🌐", output)
+    # ============================================================
+    # CONTROLLO LIMITE GIORNALIERO
+    # ============================================================
+    oggi = datetime.date.today().isoformat()
+    data_ultimo = CONFIG.get("navigazioni_data", "")
+    limite = CONFIG.get("navigazioni_limite_giorno", 5)
+
+    # Reset automatico a mezzanotte
+    if data_ultimo != oggi:
+        CONFIG["navigazioni_data"] = oggi
+        CONFIG["navigazioni_usate_oggi"] = 0
+        salva_json(CONFIG_FILE, CONFIG)
+        print(f"🔄 Limite navigazioni resettato per {oggi}")
+
+    usate = CONFIG.get("navigazioni_usate_oggi", 0)
+
+    # Controllo limite
+    if usate >= limite:
+        parla(f"Padrone~! Shaula ha già navigato {usate} volte oggi "
+              f"(limite: {limite}). Devo fermarmi per non farmi bannare! "
+              f"Riprenderò domani, ehehe~ 🦂💤", output)
+        return "LIMITE"
+
+    # Avvisa quando è agli ultimi tentativi
+    rimaste = limite - usate
+    if rimaste <= 1:
+        parla(f"⚠️ Padrone, questa è l'ultima navigazione di oggi! "
+              f"({usate}/{limite})", output)
+    elif rimaste <= 2:
+        parla(f"⚠️ Restano solo {rimaste} navigazioni oggi, Padrone~!", output)
+
+    parla(f"Shaula naviga: '{azione}'... 🌐 ({usate + 1}/{limite} oggi)", output)
+
+    # Incrementa contatore
+    CONFIG["navigazioni_usate_oggi"] = usate + 1
+    salva_json(CONFIG_FILE, CONFIG)
 
     try:
         key = CONFIG["gemini_api_key"].strip()
@@ -1164,6 +1227,29 @@ def esegui(comando, output):
 
     estrai_info_automatiche(cl, output)
 
+    # ---- STATO NAVIGAZIONI ----
+    if "navigazioni" in c and any(w in c for w in ["quante", "stato", "limite", "rimaste", "restano"]):
+        parla(stato_navigazioni(), output)
+        return True
+
+    if "resetta" in c and "navigazioni" in c:
+        CONFIG["navigazioni_usate_oggi"] = 0
+        CONFIG["navigazioni_data"] = datetime.date.today().isoformat()
+        salva_json(CONFIG_FILE, CONFIG)
+        parla("Contatore navigazioni resettato, Padrone~! Ehehe~", output)
+        return True
+
+    if "cambia limite" in c and "navigazioni" in c:
+        m = re.search(r"(\d+)", c)
+        if m:
+            nuovo_limite = int(m.group(1))
+            CONFIG["navigazioni_limite_giorno"] = nuovo_limite
+            salva_json(CONFIG_FILE, CONFIG)
+            parla(f"Limite navigazioni impostato a {nuovo_limite} al giorno, Padrone~!", output)
+        else:
+            parla("Dimmi un numero: 'cambia limite navigazioni a 10'", output)
+        return True
+
     # ---- NAVIGAZIONE AUTONOMA ----
     m = re.search(r"^naviga su\s+(.+?)\s+e\s+(.+)$", cl, re.IGNORECASE)
     if m:
@@ -1585,11 +1671,11 @@ class WakeWord(threading.Thread):
 class GUI:
     def __init__(self, root):
         self.root = root
-        root.title("🦂 S.H.A.U.L.A. v6.1")
+        root.title("🦂 S.H.A.U.L.A. v6.2")
         root.geometry("950x720")
         root.configure(bg="#1a1a2e")
 
-        tk.Label(root, text="🦂  S.H.A.U.L.A. v6.1  🦂",
+        tk.Label(root, text="🦂  S.H.A.U.L.A. v6.2  🦂",
                  font=("Segoe UI", 22, "bold"), bg="#1a1a2e", fg="#ff6b9d").pack(pady=(12, 0))
         tk.Label(root, text="La tua assistente devota, Padrone~!",
                  font=("Segoe UI", 10, "italic"), bg="#1a1a2e", fg="#a0a0c0").pack()
@@ -1643,18 +1729,20 @@ class GUI:
         else:
             self.scrivi("📔 Diario: ancora vuoto. Scriverò tra poco! 🦂\n")
 
+        # Stato navigazioni
+        self.scrivi(f"🌐 {stato_navigazioni()}\n")
+
         try:
             from playwright.sync_api import sync_playwright
-            self.scrivi("🌐 Navigazione autonoma human-like: ✅ attiva\n")
+            self.scrivi("🌐 Navigazione human-like: ✅ attiva\n")
         except ImportError:
-            self.scrivi("🌐 Navigazione autonoma: ❌ Playwright non installato\n")
+            self.scrivi("🌐 Navigazione: ❌ Playwright non installato\n")
 
         self.scrivi("\n💡 Comandi navigazione:\n")
         self.scrivi("   'naviga su google e cerca meteo roma'\n")
-        self.scrivi("   'naviga su amazon.it e cerca cuffie bluetooth'\n")
-        self.scrivi("   'estrai prezzi da https://...'\n")
-        self.scrivi("   'screenshot di https://...'\n")
-        self.scrivi("   ⚠️ Se appare un CAPTCHA, risolvilo tu in Chrome!\n\n")
+        self.scrivi("   'quante navigazioni ho fatto?'\n")
+        self.scrivi("   'cambia limite navigazioni a 10'\n")
+        self.scrivi("   'resetta navigazioni'\n\n")
 
         threading.Thread(target=lambda: parla("Shaula è pronta, Padrone~!"), daemon=True).start()
         self.wake = None
@@ -1748,7 +1836,7 @@ class GUI:
         except Exception as e: parla(f"Errore: {e}", self.output); return
         if r == "ESCI":
             self.root.after(1200, self.root.quit); return
-        if r is True:
+        if r is True or r == "LIMITE":
             self.status.config(text="Pronta", fg="#7fdb8f"); return
         risposta = chiedi_gemini(cmd)
         if risposta: parla(risposta, self.output)
