@@ -1,5 +1,5 @@
 # ============================================================
-# S.H.A.U.L.A. v7.2 - Fix WhatsApp invio
+# S.H.A.U.L.A. v7.3 - WhatsApp Desktop coordinate corrette
 # ============================================================
 import os, sys, json, time, shutil, datetime, subprocess
 import threading, webbrowser, ctypes, random, re, glob
@@ -1085,7 +1085,7 @@ def statistiche_diario():
             f"• Umore: {umore_top}\n• Ultima: {pagine[-1]['data']}")
 
 # ============================================================
-# WHATSAPP (FIXATO v7.2)
+# WHATSAPP DESKTOP - v7.3 (coordinate corrette)
 # ============================================================
 VK_CODES = {'enter': 0x0D, 'tab': 0x09, 'esc': 0x1B, 'escape': 0x1B,
     'space': 0x20, 'backspace': 0x08, 'delete': 0x2E,
@@ -1130,19 +1130,23 @@ def _combo_universale(tasti, backend):
         if vks: _win_combo(vks)
 
 def _click_primo_risultato(backend):
-    """Clicca sul primo risultato di ricerca di WhatsApp Desktop."""
+    """
+    Clicca sul primo risultato di ricerca di WhatsApp Desktop.
+    Coordinate: la lista risultati è a SINISTRA, il primo risultato è
+    in alto a sinistra (circa 15% larghezza, 20% altezza).
+    """
     try:
         if pyautogui:
             w, h = pyautogui.size()
-            x = int(w * 0.30)
-            y = int(h * 0.22)
+            x = int(w * 0.15)  # CORRETTO: 15% (era 30%, troppo a destra)
+            y = int(h * 0.20)
             pyautogui.click(x, y)
             return True
         user32 = ctypes.windll.user32
         w = user32.GetSystemMetrics(0)
         h = user32.GetSystemMetrics(1)
-        x = int(w * 0.30)
-        y = int(h * 0.22)
+        x = int(w * 0.15)
+        y = int(h * 0.20)
         user32.SetCursorPos(x, y)
         time.sleep(0.2)
         user32.mouse_event(0x0002, 0, 0, 0, 0)
@@ -1154,19 +1158,22 @@ def _click_primo_risultato(backend):
         return False
 
 def _click_campo_messaggio(backend):
-    """Clicca sul campo di scrittura della chat WhatsApp."""
+    """
+    Clicca sul campo di scrittura della chat WhatsApp Desktop.
+    Coordinate: il campo è in BASSO a DESTRA (circa 65% larghezza, 92% altezza).
+    """
     try:
         if pyautogui:
             w, h = pyautogui.size()
-            x = int(w * 0.50)
-            y = int(h * 0.88)
+            x = int(w * 0.65)  # CORRETTO: 65% (era 50%, troppo a sinistra)
+            y = int(h * 0.92)
             pyautogui.click(x, y)
             return True
         user32 = ctypes.windll.user32
         w = user32.GetSystemMetrics(0)
         h = user32.GetSystemMetrics(1)
-        x = int(w * 0.50)
-        y = int(h * 0.88)
+        x = int(w * 0.65)
+        y = int(h * 0.92)
         user32.SetCursorPos(x, y)
         time.sleep(0.2)
         user32.mouse_event(0x0002, 0, 0, 0, 0)
@@ -1183,32 +1190,40 @@ def invia_whatsapp_shaula(contatto, messaggio_utente, output):
     backend = "pyautogui" if pyautogui else ("keyboard" if keyboard else "winapi")
     parla(f"Shaula apre WhatsApp per {contatto}... 💕", output)
     try:
+        # 1. Apri WhatsApp Desktop
         try:
             os.startfile("whatsapp://")
         except Exception:
             webbrowser.open("https://web.whatsapp.com")
         time.sleep(10)
 
+        # 2. Apri ricerca (Ctrl+F)
         _combo_universale(["ctrl", "f"], backend)
         time.sleep(2)
 
+        # 3. Pulisci barra ricerca
         _combo_universale(["ctrl", "a"], backend)
         time.sleep(0.3)
         _premi_universale("delete", backend)
         time.sleep(0.5)
 
+        # 4. Scrivi il nome del contatto
         _scrivi_universale(contatto, backend)
         time.sleep(3)
 
+        # 5. Clicca sul primo risultato (a SINISTRA, 15%, 20%)
         _click_primo_risultato(backend)
         time.sleep(2.5)
 
+        # 6. Clicca sul campo di scrittura (in BASSO a DESTRA, 65%, 92%)
         _click_campo_messaggio(backend)
         time.sleep(1.5)
 
+        # 7. Scrivi il messaggio
         _scrivi_universale(msg, backend)
         time.sleep(1.5)
 
+        # 8. Invia
         _premi_universale("enter", backend)
         time.sleep(0.5)
 
@@ -1882,11 +1897,11 @@ class WakeWord(threading.Thread):
 class GUI:
     def __init__(self, root):
         self.root = root
-        root.title("🦂 S.H.A.U.L.A. v7.2")
+        root.title("🦂 S.H.A.U.L.A. v7.3")
         root.geometry("950x720")
         root.configure(bg="#1a1a2e")
 
-        tk.Label(root, text="🦂  S.H.A.U.L.A. v7.2  🦂",
+        tk.Label(root, text="🦂  S.H.A.U.L.A. v7.3  🦂",
                  font=("Segoe UI", 22, "bold"), bg="#1a1a2e", fg="#ff6b9d").pack(pady=(12, 0))
         tk.Label(root, text="La tua assistente devota, Padrone~!",
                  font=("Segoe UI", 10, "italic"), bg="#1a1a2e", fg="#a0a0c0").pack()
@@ -1950,7 +1965,7 @@ class GUI:
         except ImportError:
             self.scrivi("🌐 Navigazione: ❌ Playwright non installato\n")
 
-        self.scrivi("\n💡 WhatsApp: 'di a [nome] che [messaggio]'\n")
+        self.scrivi("\n💡 WhatsApp Desktop: 'di a [nome] che [messaggio]'\n")
         self.scrivi("💡 Navigazione: 'naviga su google e cerca meteo roma'\n\n")
 
         threading.Thread(target=lambda: parla("Shaula è pronta, Padrone~!"), daemon=True).start()
