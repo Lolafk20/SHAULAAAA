@@ -13,11 +13,12 @@ jobs:
       - name: Installa dipendenze
         run: |
           python -m pip install --upgrade pip
-          pip install pyttsx3 SpeechRecognition pyaudio google-generativeai psutil Pillow keyboard duckduckgo-search pycaw comtypes requests pyautogui pyinstaller
+          pip install pyttsx3 SpeechRecognition pyaudio google-generativeai psutil Pillow keyboard duckduckgo-search pycaw comtypes requests playwright pyinstaller
+          python -m playwright install chromium
 
       - name: Compila exe
         run: |
-          pyinstaller --onefile --windowed --name SHAULA --add-data "config.json;." --hidden-import=pyaudio --hidden-import=speech_recognition --hidden-import=pycaw --hidden-import=comtypes --collect-all=google.generativeai --collect-all=duckduckgo_search shaula.py
+          pyinstaller --onefile --windowed --name SHAULA --add-data "config.json;." --hidden-import=pyaudio --hidden-import=speech_recognition --hidden-import=pycaw --hidden-import=comtypes --hidden-import=keyboard --collect-all=google.generativeai --collect-all=duckduckgo_search --collect-all=playwright shaula.py
 
       - uses: actions/upload-artifact@v4
         with:
