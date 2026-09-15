@@ -1,5 +1,5 @@
 # ============================================================
-# S.H.A.U.L.A. v5.5.3 - Visione avanzata + domande personalizzate
+# S.H.A.U.L.A. v5.5.4 - Approfondimento libero con linguaggio naturale
 # ============================================================
 import os, sys, json, time, shutil, datetime, subprocess
 import threading, webbrowser, ctypes, random, re, glob
@@ -67,6 +67,7 @@ PLUGIN_FILE = os.path.join(BASE_DIR, "plugins.py")
 NOTE_FILE = os.path.join(BASE_DIR, "note.json")
 AGENDA_FILE = os.path.join(BASE_DIR, "agenda.json")
 DIARIO_FILE = os.path.join(BASE_DIR, "diario.json")
+ULTIMA_RICERCA_FILE = os.path.join(BASE_DIR, "ultima_ricerca.json")
 
 def carica_json(p, default):
     if os.path.exists(p):
@@ -156,7 +157,7 @@ VERBI_COMANDO = [
     "modalità", "modalita", "processi", "pulisci", "email", "mail", "agenda",
     "evento", "nota", "lista", "whatsapp", "dì", "di", "dici", "manda", "invia",
     "messaggio", "diario", "vedi", "guarda", "chiedi", "domanda", "rispondi",
-    "dimmi", "analizza"
+    "dimmi", "analizza", "approfondisci", "spiegami", "parlami", "raccontami"
 ]
 
 def sembra_comando(testo):
@@ -368,6 +369,21 @@ def suona_timer(output=None):
     threading.Thread(target=_suona, daemon=True).start()
 
 # ============================================================
+# MEMORIA ULTIMA RICERCA
+# ============================================================
+ULTIMA_RICERCA = carica_json(ULTIMA_RICERCA_FILE, {"argomento": "", "tipo": "", "risultati": [], "risposta": ""})
+
+def salva_ultima_ricerca(argomento, tipo, risultati, risposta):
+    global ULTIMA_RICERCA
+    ULTIMA_RICERCA = {
+        "argomento": argomento,
+        "tipo": tipo,
+        "risultati": risultati[:5] if risultati else [],
+        "risposta": risposta[:1000] if risposta else ""
+    }
+    salva_json(ULTIMA_RICERCA_FILE, ULTIMA_RICERCA)
+
+# ============================================================
 # RICERCA WEB
 # ============================================================
 def cerca_web(query, max_results=4):
@@ -383,14 +399,157 @@ def rispondi_con_ricerca(query, output):
     risultati = cerca_web(query)
     if not risultati:
         r = chiedi_gemini(query)
-        parla(r or "Non trovo nulla, Padrone~", output)
+        risposta = r or "Non trovo nulla, Padrone~"
+        parla(risposta, output)
+        salva_ultima_ricerca(query, "ricerca", [], risposta)
         return
     contesto = "Risultati web recenti:\n"
     for i, r in enumerate(risultati, 1):
         contesto += f"{i}. {r.get('title','')}: {r.get('body','')[:200]}\n"
     contesto += f"\nDomanda: {query}\nRispondi in 2-3 frasi con personalità Shaula."
     risposta = chiedi_gemini(contesto)
-    parla(risposta or risultati[0].get('body', '')[:300], output)
+    risposta_finale = risposta or risultati[0].get('body', '')[:300]
+    parla(risposta_finale, output)
+    salva_ultima_ricerca(query, "ricerca", risultati, risposta_finale)
+
+# ============================================================
+# APPROFONDIMENTO LIBERO (capisce il linguaggio naturale)
+# ============================================================
+def approfondisci_libero(richiesta, output):
+    """
+    Approfondisce qualsiasi cosa, capendo il linguaggio naturale.
+    Esempi: "dimmi di più su Roma", "approfondisci la pizza",
+            "spiegami meglio la foto", "cosa sai di Einstein",
+            "dimmi di più", "vai avanti", "approfondisci quello che hai detto"
+    """
+    global ULTIMA_RICERCA
+    
+    if not genai or not CONFIG.get("gemini_api_key"):
+        parla("Serve la API key Gemini, Padrone~", output)
+        return False
+    
+    parla(f"Shaula approfondisce: '{richiesta}' 📖", output)
+    
+    def _thread():
+        try:
+            # 1. Chiedi a Gemini di analizzare la richiesta in linguaggio naturale
+            contesto_ultima = ""
+            if ULTIMA_RICERCA.get("argomento"):
+                contesto_ultima = (
+                    f"\nUltima cosa che Shaula ha cercato o visto: '{ULTIMA_RICERCA['argomento']}'\n"
+                    f"Ultima risposta data: '{ULTIMA_RICERCA.get('risposta', '')[:300]}'\n"
+                )
+            
+            prompt_analisi = (
+                f"Sei un analista di richieste. Il Padrone ha detto: \"{richiesta}\"\n"
+                f"{contesto_ultima}\n"
+                f"Devi estrarre DUE cose:\n"
+                f"1. ARGOMENTO: cosa vuole approfondire. Se si riferisce a "
+                f"\"questo/quello/quella/esso/quello che hai detto/l'ultima cosa\", "
+                f"allora rispondi esattamente 'ULTIMA_RICERCA'. "
+                f"Se invece menziona qualcosa di specifico (es. 'la pizza', 'Roma', "
+                f"'Einstein', 'quella figura'), scrivi quell'argomento.\n"
+                f"2. STILE: come vuole l'approfondimento. Scegli tra:\n"
+                f"   - 'dettagli' (più specifico/tecnico)\n"
+                f"   - 'esempi' (esempi concreti)\n"
+                f"   - 'semplice' (spiegazione facile)\n"
+                f"   - 'pro_contro' (vantaggi e svantaggi)\n"
+                f"   - 'storia' (origini e storia)\n"
+                f"   - 'come' (guida passo passo)\n"
+                f"   - 'generale' (approfondimento libero)\n\n"
+                f"Rispondi ESATTAMENTE in questo formato, niente altro:\n"
+                f"ARGOMENTO: [argomento o ULTIMA_RICERCA]\n"
+                f"STILE: [uno dei 7 stili]"
+            )
+            
+            genai.configure(api_key=CONFIG["gemini_api_key"].strip())
+            m = genai.GenerativeModel(MODELLO_ATTIVO or MODELLO_FALLBACK)
+            analisi = m.generate_content(prompt_analisi).text.strip()
+            
+            argomento = ""
+            stile = "generale"
+            
+            m_arg = re.search(r"ARGOMENTO:\s*(.+)", analisi)
+            if m_arg:
+                argomento = m_arg.group(1).strip().strip('"').strip("'")
+            m_stile = re.search(r"STILE:\s*(\w+)", analisi)
+            if m_stile:
+                stile = m_stile.group(1).strip().lower()
+            
+            # 2. Se argomento è ULTIMA_RICERCA, usalo
+            if argomento.upper() == "ULTIMA_RICERCA" or not argomento:
+                argomento = ULTIMA_RICERCA.get("argomento", "")
+                if not argomento:
+                    parla("Shaula non ha ancora cercato nulla, Padrone~! "
+                          "Chiedile prima di cercare qualcosa 🦂", output)
+                    return
+            
+            parla(f"Approfondisco '{argomento}' con stile '{stile}'", output)
+            
+            # 3. Cerca nuove informazioni in rete
+            query_ricerca = argomento
+            if stile == "storia":
+                query_ricerca = f"storia origine {argomento}"
+            elif stile == "come":
+                query_ricerca = f"come funziona {argomento}"
+            elif stile == "pro_contro":
+                query_ricerca = f"vantaggi svantaggi {argomento}"
+            elif stile == "dettagli":
+                query_ricerca = f"{argomento} dettagli tecnici approfondimento"
+            elif stile == "esempi":
+                query_ricerca = f"{argomento} esempi concreti"
+            
+            risultati = cerca_web(query_ricerca, max_results=4)
+            
+            contesto = f"Argomento: {argomento}\n"
+            if ULTIMA_RICERCA.get("risposta"):
+                contesto += f"Cosa era già stato detto: {ULTIMA_RICERCA['risposta'][:300]}\n"
+            if risultati:
+                contesto += "\nNuovi risultati web:\n"
+                for i, r in enumerate(risultati, 1):
+                    contesto += f"{i}. {r.get('title','')}: {r.get('body','')[:200]}\n"
+            
+            # 4. Chiedi a Gemini il testo finale
+            mappa_stili = {
+                "dettagli": "Dettagli tecnici e specifici, con numeri e fatti concreti.",
+                "esempi": "Almeno 5 esempi pratici e concreti.",
+                "semplice": "Spiegazione semplicissima, come a un bambino di 10 anni.",
+                "pro_contro": "Lista chiara di PRO e CONTRO.",
+                "storia": "Storia, origini ed evoluzione nel tempo.",
+                "come": "Guida passo-passo pratica.",
+                "generale": "Nuove informazioni che non erano già state dette."
+            }
+            indicazione = mappa_stili.get(stile, mappa_stili["generale"])
+            
+            prompt_finale = (
+                f"Sei Shaula di Re:Zero. Il Padrone ti ha chiesto di approfondire: '{richiesta}'.\n\n"
+                f"{contesto}\n\n"
+                f"ISTRUZIONI: {indicazione}\n\n"
+                f"Rispondi in italiano, 4-6 frasi, con la tua personalità "
+                f"(devota, '~', 'ehehe', emoji 🦂💕✨). Sii precisa e interessante."
+            )
+            
+            risposta = m.generate_content(prompt_finale).text.strip()
+            parla(risposta, output)
+            
+            # 5. Aggiorna memoria ultima ricerca
+            salva_ultima_ricerca(argomento, stile, risultati, risposta)
+        except Exception as e:
+            parla(f"❌ Errore approfondimento: {str(e)[:150]}", output)
+    
+    threading.Thread(target=_thread, daemon=True).start()
+    return True
+
+def cosa_so_di(output):
+    if not ULTIMA_RICERCA.get("argomento"):
+        parla("Shaula non ha ancora cercato nulla, Padrone~", output)
+        return False
+    argomento = ULTIMA_RICERCA["argomento"]
+    risposta = ULTIMA_RICERCA.get("risposta", "")
+    parla(f"L'ultima cosa che Shaula ha cercato era: '{argomento}'", output)
+    if risposta:
+        parla(f"Ecco cosa aveva detto:\n{risposta}", output)
+    return True
 
 # ============================================================
 # VISIONE SCHERMO AVANZATA
@@ -438,6 +597,7 @@ def cosa_vedi(output):
     risposta = _chiedi_a_gemini_vision(domanda, output)
     if risposta:
         parla(risposta, output)
+        salva_ultima_ricerca("schermo: " + risposta[:80], "visione", [], risposta)
 
 def leggi_e_cerca(output):
     parla("Shaula guarda lo schermo e cerca, Padrone~...", output)
@@ -483,6 +643,7 @@ def chiedi_e_cerca(domanda, output):
     if not risposta_vision:
         return False
     parla(risposta_vision, output)
+    salva_ultima_ricerca(domanda, "visione", [], risposta_vision)
     parla("Ora cerco di approfondire in rete, Padrone~...", output)
     prompt_query = (
         f"Basandoti su questa descrizione: '{risposta_vision[:300]}', "
@@ -510,6 +671,7 @@ def chiedi_solo_schermo(domanda, output):
     risposta = _chiedi_a_gemini_vision(prompt, output)
     if risposta:
         parla(risposta, output)
+        salva_ultima_ricerca(domanda, "visione", [], risposta)
 
 # ============================================================
 # DIARIO
@@ -988,10 +1150,57 @@ def esegui(comando, output):
             return True
 
     # ============================================================
+    # APPROFONDIMENTI LIBERI (LINGUAGGIO NATURALE)
+    # ============================================================
+    # Cattura qualsiasi frase che inizia con verbi di approfondimento
+    pattern_approfondimento = (
+        r"^\s*(?:"
+        r"approfondisci(?:\s+(?:su|di|il|la|lo|gli|le|questo|questa|quello|quella))?"
+        r"|dimmi\s+(?:di\s+pi[uù]|qualcosa\s+in\s+pi[uù])"
+        r"|spiegami(?:\s+meglio|\s+di\s+pi[uù]|\s+ancora)?"
+        r"|voglio\s+sapere\s+(?:di\s+pi[uù]|qualcosa\s+in\s+pi[uù]|altro)"
+        r"|voglio\s+approfondire"
+        r"|parlami(?:\s+(?:di|del|della|dei|delle|su))?"
+        r"|raccontami(?:\s+(?:di|del|della|dei|delle|su))?"
+        r"|cosa\s+puoi\s+dirmi\s+(?:su|di|riguardo\s+a)"
+        r"|cosa\s+sai\s+(?:su|di|riguardo\s+a)"
+        r"|pi[uù]\s+informazioni\s+(?:su|di|riguardo\s+a)"
+        r"|pi[uù]\s+dettagli\s+(?:su|di|riguardo\s+a)"
+        r"|dammi\s+pi[uù]\s+(?:dettagli|info|informazioni)\s+(?:su|di)?"
+        r"|continua\s+(?:a\s+parlare|il\s+discorso|a\s+spiegare)"
+        r"|vai\s+avanti"
+        r"|approfondiamo"
+        r"|continua\s+cos[iì]"
+        r"|elabora(?:\s+(?:meglio|di\s+pi[uù]))?"
+        r"|espandi(?:\s+(?:il\s+concetto|questo|quello))?"
+        r")\s*(.*)$"
+    )
+    m_app = re.match(pattern_approfondimento, cl, re.IGNORECASE)
+    if m_app:
+        resto = m_app.group(1).strip()
+        # Rimuovi preposizioni iniziali
+        resto = re.sub(r"^(?:su|di|del|della|dei|delle|riguardo\s+a|a|il|la|lo|gli|le|questo|questa|quello|quella)\s+", 
+                       "", resto, flags=re.IGNORECASE).strip()
+        # Se il resto è vuoto o generico, approfondisci l'ultima ricerca
+        if not resto or resto.lower() in ["questo", "questa", "quello", "quella", "esso", "essa", 
+                                            "l'ultima cosa", "la cosa", "il discorso", "quello che hai detto"]:
+            richiesta = "Approfondisci l'ultima cosa che hai cercato o visto"
+        else:
+            richiesta = resto
+        threading.Thread(target=approfondisci_libero, args=(richiesta, output), daemon=True).start()
+        return True
+
+    # Comandi "cosa hai trovato" / "ripeti"
+    if any(p in c for p in ["cosa hai trovato", "cosa hai detto prima",
+                              "ripeti", "ripetimi", "cosa avevi detto",
+                              "cosa hai trovato prima"]):
+        threading.Thread(target=cosa_so_di, args=(output,), daemon=True).start()
+        return True
+
+    # ============================================================
     # LETTURA SCHERMO AVANZATA - DOMANDE PERSONALIZZATE
     # ============================================================
     
-    # ═══ COMANDO ESPLICITO: "chiedi allo schermo: [domanda]" ═══
     m = re.search(r"^(?:chiedi allo schermo|chiedi allo schermo:|guarda lo schermo e dimmi|"
                   r"domanda allo schermo|domanda allo schermo:|chiedi al monitor|"
                   r"chiedi allo schermo che|chiedi al monitor che)"
@@ -1001,7 +1210,6 @@ def esegui(comando, output):
         threading.Thread(target=chiedi_e_cerca, args=(domanda, output), daemon=True).start()
         return True
 
-    # ═══ COMANDO ESPLICITO SENZA CERCA: "guarda e rispondi: [domanda]" ═══
     m = re.search(r"^(?:guarda e rispondi|guarda e dimmi|rispondi a|dimmi)"
                   r"[:\s]\s*(.+?)(?:\s+(?:sullo schermo|sulla schermata|che vedo))?$", 
                   cl, re.IGNORECASE)
@@ -1011,7 +1219,6 @@ def esegui(comando, output):
             threading.Thread(target=chiedi_solo_schermo, args=(domanda, output), daemon=True).start()
             return True
 
-    # ═══ COMANDO ESPLICITO CON CERCA: "guarda e cerca: [argomento]" ═══
     m = re.search(r"^(?:guarda e cerca|vedi e cerca|analizza e cerca)[:\s]\s*(.+)$", 
                   cl, re.IGNORECASE)
     if m:
@@ -1019,7 +1226,6 @@ def esegui(comando, output):
         threading.Thread(target=chiedi_e_cerca, args=(argomento, output), daemon=True).start()
         return True
 
-    # ═══ DOMANDA + "sullo schermo" + "cerca" ═══
     m = re.search(r"^(.+?)\s+(?:sullo schermo|sulla schermata|sul monitor|che vedo|che c'è sullo schermo)"
                   r"(?:\s+(?:e\s+cerca|e\s+cercalo|e\s+cercala|cercalo|cercala|e\s+cerca in rete|"
                   r"e\s+cerca online|e\s+cerca su google))$", cl, re.IGNORECASE)
@@ -1028,7 +1234,6 @@ def esegui(comando, output):
         threading.Thread(target=chiedi_e_cerca, args=(domanda, output), daemon=True).start()
         return True
 
-    # ═══ DOMANDA + "sullo schermo" (senza cerca) ═══
     m = re.search(r"^(.+?)\s+(?:sullo schermo|sulla schermata|sul monitor|che vedo|che c'è sullo schermo)$", 
                   cl, re.IGNORECASE)
     if m and len(m.group(1).strip()) >= 3:
@@ -1036,7 +1241,6 @@ def esegui(comando, output):
         threading.Thread(target=chiedi_solo_schermo, args=(domanda, output), daemon=True).start()
         return True
 
-    # ═══ DOMANDE DIRETTE CON PAROLE CHIAVE ═══
     if any(p in c for p in ["cosa c'è scritto", "cosa dice", "cosa mostra", 
                               "che errore", "che messaggio", "che persona", 
                               "che cartone", "che film", "che serie", "che gioco",
@@ -1049,23 +1253,18 @@ def esegui(comando, output):
         threading.Thread(target=chiedi_solo_schermo, args=(domanda, output), daemon=True).start()
         return True
 
-    # ═══ COMANDI FISSI ═══
-    
-    # "cerca quello che vedi"
     if any(p in c for p in ["cerca quello che vedi", "cerca quello che c'è sullo schermo",
                               "cerca quello sullo schermo", "cerca tutto quello che vedi",
                               "cerca tutto quello sullo schermo", "cerca quello che vedo"]):
         threading.Thread(target=cerca_quello_che_vedi, args=(output,), daemon=True).start()
         return True
 
-    # "leggi schermo e cerca"
     if any(p in c for p in ["leggi schermo e cerca", "leggi lo schermo e cerca",
                               "leggi e cerca", "vedi e cerca", "guarda e cerca",
                               "leggi schermo", "leggi lo schermo"]):
         threading.Thread(target=leggi_e_cerca, args=(output,), daemon=True).start()
         return True
 
-    # "cosa vedi" / "descrivi schermo"
     if "cosa vedi" in c or "cosa c'è sullo schermo" in c or "descrivi schermo" in c:
         threading.Thread(target=cosa_vedi, args=(output,), daemon=True).start()
         return True
@@ -1522,11 +1721,11 @@ class WakeWord(threading.Thread):
 class GUI:
     def __init__(self, root):
         self.root = root
-        root.title("🦂 S.H.A.U.L.A. v5.5.3")
+        root.title("🦂 S.H.A.U.L.A. v5.5.4")
         root.geometry("950x720")
         root.configure(bg="#1a1a2e")
 
-        tk.Label(root, text="🦂  S.H.A.U.L.A. v5.5.3  🦂",
+        tk.Label(root, text="🦂  S.H.A.U.L.A. v5.5.4  🦂",
                  font=("Segoe UI", 22, "bold"), bg="#1a1a2e", fg="#ff6b9d").pack(pady=(12, 0))
         tk.Label(root, text="La tua assistente devota, Padrone~!",
                  font=("Segoe UI", 10, "italic"), bg="#1a1a2e", fg="#a0a0c0").pack()
@@ -1578,12 +1777,13 @@ class GUI:
             ultima = DIARIO["pagine"][-1]
             self.scrivi(f"📔 Diario: {n_pagine} pagine | Ultima: {ultima['data']}\n")
 
-        self.scrivi("\n💡 Domande personalizzate sullo schermo:\n")
-        self.scrivi("   • 'chiedi allo schermo: che errore c'è?'\n")
-        self.scrivi("   • 'che cartone è quello sullo schermo e cerca'\n")
-        self.scrivi("   • 'che persona è quella sullo schermo'\n")
-        self.scrivi("   • 'cosa c'è scritto qui?'\n")
-        self.scrivi("   • 'cerca quello che vedi' / 'leggi schermo e cerca'\n\n")
+        self.scrivi("\n💡 Puoi parlare naturalmente:\n")
+        self.scrivi("   • 'dimmi di più sulla figura che vedi'\n")
+        self.scrivi("   • 'spiegami meglio la pizza'\n")
+        self.scrivi("   • 'approfondisci Roma con dettagli'\n")
+        self.scrivi("   • 'parlami di Einstein'\n")
+        self.scrivi("   • 'voglio sapere di più su Demon Slayer'\n")
+        self.scrivi("   • 'vai avanti' / 'continua'\n\n")
 
         threading.Thread(target=lambda: parla("Shaula è pronta, Padrone~!"), daemon=True).start()
         self.wake = None
