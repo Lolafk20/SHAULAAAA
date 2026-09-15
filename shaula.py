@@ -1,5 +1,5 @@
 # ============================================================
-# S.H.A.U.L.A. v5.5.1 - Fix variabile MEMORIA locale
+# S.H.A.U.L.A. v5.5.2 - Visione schermo avanzata
 # ============================================================
 import os, sys, json, time, shutil, datetime, subprocess
 import threading, webbrowser, ctypes, random, re, glob
@@ -155,7 +155,7 @@ VERBI_COMANDO = [
     "screenshot", "converti", "traduci", "riassumi", "ricorda", "dimentica",
     "modalità", "modalita", "processi", "pulisci", "email", "mail", "agenda",
     "evento", "nota", "lista", "whatsapp", "dì", "di", "dici", "manda", "invia",
-    "messaggio", "diario"
+    "messaggio", "diario", "vedi", "guarda"
 ]
 
 def sembra_comando(testo):
@@ -392,61 +392,120 @@ def rispondi_con_ricerca(query, output):
     parla(risposta or risultati[0].get('body', '')[:300], output)
 
 # ============================================================
-# VISIONE SCHERMO
+# VISIONE SCHERMO AVANZATA
 # ============================================================
-def leggi_schermo(output):
+def _screenshot_corrente():
+    """Cattura lo schermo e restituisce il path temporaneo."""
     if not PIL_ImageGrab:
-        parla("Pillow non installato, Padrone~", output); return None
-    if not genai or not CONFIG.get("gemini_api_key"):
-        parla("Serve la API key Gemini, Padrone~", output); return None
+        return None
     try:
         img = PIL_ImageGrab.grab()
         p = os.path.join(BASE_DIR, "_temp_screen.png")
         img.save(p)
+        return p
+    except Exception:
+        return None
+
+def _chiedi_a_gemini_vision(domanda, output):
+    """Chiede a Gemini Vision qualcosa sullo schermo. Restituisce la risposta testuale."""
+    if not PIL_ImageGrab:
+        parla("Pillow non installato, Padrone~", output); return None
+    if not genai or not CONFIG.get("gemini_api_key"):
+        parla("Serve la API key Gemini, Padrone~", output); return None
+    p = _screenshot_corrente()
+    if not p:
+        parla("Non riesco a fare lo screenshot, Padrone~", output); return None
+    try:
         from PIL import Image as _PILImage
         img_pil = _PILImage.open(p)
         vision_model = genai.GenerativeModel(MODELLO_ATTIVO or MODELLO_FALLBACK)
-        prompt = ("Leggi il testo che vedi sullo schermo. "
-                  "Restituisci SOLO il testo principale visibile, senza commenti.")
-        risposta = vision_model.generate_content([prompt, img_pil])
+        risposta = vision_model.generate_content([domanda, img_pil])
         testo = risposta.text.strip()
         try: os.remove(p)
         except: pass
         return testo
     except Exception as e:
-        parla(f"Errore lettura schermo: {str(e)[:150]}", output)
+        parla(f"Errore vision: {str(e)[:150]}", output)
         return None
 
+def cosa_vedi(output):
+    """Descrive TUTTO quello che vede (immagini + testo)."""
+    parla("Shaula guarda lo schermo, Padrone~...", output)
+    domanda = (
+        "Guarda questo screenshot del desktop. Descrivi in 4-5 frasi TUTTO quello "
+        "che vedi: applicazioni aperte, immagini, icone, testo importante, colori, "
+        "e cosa sembra stia facendo l'utente. Parla con la personalità di Shaula "
+        "(devota, '~', 'ehehe', emoji 🦂💕✨)."
+    )
+    risposta = _chiedi_a_gemini_vision(domanda, output)
+    if risposta:
+        parla(risposta, output)
+
 def leggi_e_cerca(output):
-    parla("Shaula legge lo schermo, Padrone~...", output)
-    testo = leggi_schermo(output)
-    if not testo:
+    """Vede lo schermo, lo riassume e cerca il contenuto principale in rete."""
+    parla("Shaula guarda lo schermo e cerca, Padrone~...", output)
+    domanda = (
+        "Guarda questo screenshot. Riassumi in UNA FRASE CORTA (max 100 caratteri) "
+        "il contenuto principale che vedi (es. 'un articolo su X', 'una pagina di Wikipedia su Y', "
+        "'una foto di Z', 'una chat con W'). "
+        "Restituisci SOLO la frase, senza commenti né virgolette."
+    )
+    riassunto = _chiedi_a_gemini_vision(domanda, output)
+    if not riassunto:
         return False
-    parla(f"Ho letto: '{testo[:200]}'", output)
+    riassunto = riassunto.strip().strip('"').strip("'")[:150]
+    parla(f"Vedo: '{riassunto}'", output)
     parla("Ora cerco in rete, Padrone~...", output)
-    query = testo.replace("\n", " ").strip()[:150]
-    rispondi_con_ricerca(query, output)
+    rispondi_con_ricerca(riassunto, output)
     return True
 
-def cosa_vedi(output):
-    if not PIL_ImageGrab:
-        parla("Pillow non installato, Padrone~", output); return
-    if not genai or not CONFIG.get("gemini_api_key"):
-        parla("Serve la API key Gemini, Padrone~", output); return
+def cerca_quello_che_vedi(output):
+    """Trova TUTTO quello che vede sullo schermo e cerca l'argomento principale."""
+    parla("Shaula guarda TUTTO quello che c'è sullo schermo, Padrone~...", output)
+    domanda = (
+        "Guarda questo screenshot. Elenca TUTTI gli elementi visibili: "
+        "immagini (descrivile), testo, nomi, titoli, applicazioni. "
+        "Poi restituisci UNA FRASE CORTA (max 120 caratteri) che riassume "
+        "l'argomento PRINCIPALE da cercare online. "
+        "Restituisci SOLO la frase finale, senza commenti."
+    )
+    riassunto = _chiedi_a_gemini_vision(domanda, output)
+    if not riassunto:
+        return False
+    riassunto = riassunto.strip().strip('"').strip("'")[:150]
+    parla(f"Cerco: '{riassunto}'", output)
+    rispondi_con_ricerca(riassunto, output)
+    return True
+
+def chiedi_e_cerca(domanda, output):
+    """Fai una domanda personalizzata sullo schermo + cerca in rete."""
+    parla(f"Shaula guarda lo schermo per rispondere a: '{domanda}'", output)
+    prompt_vision = (
+        f"Guarda questo screenshot del desktop. Rispondi a questa domanda "
+        f"del Padrone in 2-3 frasi con la tua personalità: '{domanda}'. "
+        f"Se ci sono immagini, descrivile. Sii precisa."
+    )
+    risposta_vision = _chiedi_a_gemini_vision(prompt_vision, output)
+    if not risposta_vision:
+        return False
+    parla(risposta_vision, output)
+    parla("Ora cerco di approfondire in rete, Padrone~...", output)
+    prompt_query = (
+        f"Basandoti su questa descrizione: '{risposta_vision[:300]}', "
+        f"e sulla domanda: '{domanda}', "
+        f"genera UNA SOLA query breve (max 100 caratteri) da cercare online. "
+        f"Restituisci SOLO la query, senza virgolette né commenti."
+    )
     try:
-        img = PIL_ImageGrab.grab()
-        p = os.path.join(BASE_DIR, "_temp_screen.png")
-        img.save(p)
-        from PIL import Image as _PILImage
-        img_pil = _PILImage.open(p)
-        vision_model = genai.GenerativeModel(MODELLO_ATTIVO or MODELLO_FALLBACK)
-        prompt = "Descrivi cosa vedi in 3 frasi con la personalità di Shaula."
-        risposta = vision_model.generate_content([prompt, img_pil])
-        parla(risposta.text, output)
-        try: os.remove(p)
-        except: pass
+        genai.configure(api_key=CONFIG["gemini_api_key"].strip())
+        m = genai.GenerativeModel(MODELLO_ATTIVO or MODELLO_FALLBACK)
+        query = m.generate_content(prompt_query).text.strip().strip('"').strip("'")[:120]
+        if query:
+            parla(f"Cerco: '{query}'", output)
+            rispondi_con_ricerca(query, output)
     except Exception as e:
-        parla(f"Errore: {str(e)[:150]}", output)
+        parla(f"Errore generazione query: {str(e)[:120]}", output)
+    return True
 
 # ============================================================
 # DIARIO
@@ -922,14 +981,44 @@ def esegui(comando, output):
             parla("Per quanto tempo? 'blocca schermo tra 5 minuti'", output)
             return True
 
-    # ---- LETTURA SCHERMO ----
+    # ---- LETTURA SCHERMO AVANZATA ----
+    # 1. "cerca quello che vedi" / "cerca tutto quello che vedi"
+    if any(p in c for p in ["cerca quello che vedi", "cerca quello che c'è sullo schermo",
+                              "cerca quello sullo schermo", "cerca tutto quello che vedi",
+                              "cerca tutto quello sullo schermo"]):
+        threading.Thread(target=cerca_quello_che_vedi, args=(output,), daemon=True).start()
+        return True
+
+    # 2. "leggi schermo e cerca" / "vedi e cerca"
     if any(p in c for p in ["leggi schermo e cerca", "leggi lo schermo e cerca",
-                              "leggi e cerca", "cerca quello sullo schermo",
-                              "cerca quello che vedi"]):
+                              "leggi e cerca", "vedi e cerca", "guarda e cerca"]):
         threading.Thread(target=leggi_e_cerca, args=(output,), daemon=True).start()
         return True
 
-    if "cosa vedi" in c or ("leggi" in c and "schermo" in c):
+    # 3. Domanda personalizzata + cerca: "[domanda] sullo schermo e cerca"
+    m = re.search(r"^(.+?)\s+(?:sullo schermo|sulla schermata|che vedo)\s+e\s+cerca$", c)
+    if m:
+        domanda = m.group(1).strip()
+        threading.Thread(target=chiedi_e_cerca, args=(domanda, output), daemon=True).start()
+        return True
+
+    # 4. Domanda personalizzata semplice: "[domanda] sullo schermo"
+    m = re.search(r"^(.+?)\s+(?:sullo schermo|sulla schermata|che vedo)$", c)
+    if m and len(m.group(1).strip()) >= 3:
+        domanda = m.group(1).strip()
+        def _chiedi_solo():
+            prompt = (
+                f"Guarda questo screenshot del desktop. Rispondi a: '{domanda}'. "
+                f"In 2-3 frasi, con la personalità di Shaula. Descrivi anche eventuali immagini."
+            )
+            risposta = _chiedi_a_gemini_vision(prompt, output)
+            if risposta:
+                parla(risposta, output)
+        threading.Thread(target=_chiedi_solo, daemon=True).start()
+        return True
+
+    # 5. Descrivi schermo (default)
+    if "cosa vedi" in c or "cosa c'è sullo schermo" in c or ("leggi" in c and "schermo" in c):
         threading.Thread(target=cosa_vedi, args=(output,), daemon=True).start()
         return True
 
@@ -978,12 +1067,6 @@ def esegui(comando, output):
         if MEMORIA["info"]: msg += "Info: " + ", ".join(f"{k}={v}" for k, v in MEMORIA["info"].items()) + ". "
         if MEMORIA["ricordi"]: msg += "Ricordi: " + "; ".join(MEMORIA["ricordi"][-5:])
         parla(msg or "Non ricordo nulla", output); return True
-    if "dimentica tutto" in c:
-        MEMORIA["ricordi"] = []
-        MEMORIA["preferenze"] = {}
-        MEMORIA["info"] = {}
-        salva_json(MEMORIA_FILE, MEMORIA)
-        parla("Memoria azzerata!", output); return True
 
     # ---- WHATSAPP ----
     verbi_wa = r"(?:dì|di|dici|manda|invia|scrivi|messaggio)"
@@ -1347,11 +1430,11 @@ class WakeWord(threading.Thread):
 class GUI:
     def __init__(self, root):
         self.root = root
-        root.title("🦂 S.H.A.U.L.A. v5.5.1")
+        root.title("🦂 S.H.A.U.L.A. v5.5.2")
         root.geometry("950x720")
         root.configure(bg="#1a1a2e")
 
-        tk.Label(root, text="🦂  S.H.A.U.L.A. v5.5.1  🦂",
+        tk.Label(root, text="🦂  S.H.A.U.L.A. v5.5.2  🦂",
                  font=("Segoe UI", 22, "bold"), bg="#1a1a2e", fg="#ff6b9d").pack(pady=(12, 0))
         tk.Label(root, text="La tua assistente devota, Padrone~!",
                  font=("Segoe UI", 10, "italic"), bg="#1a1a2e", fg="#a0a0c0").pack()
@@ -1403,12 +1486,11 @@ class GUI:
             ultima = DIARIO["pagine"][-1]
             self.scrivi(f"📔 Diario: {n_pagine} pagine | Ultima: {ultima['data']}\n")
 
-        self.scrivi("\n💡 Comandi principali:\n")
-        self.scrivi("   • 'cerca [argomento]' → cerca su internet\n")
-        self.scrivi("   • 'leggi schermo e cerca' → legge e cerca\n")
-        self.scrivi("   • 'timer 5 minuti' → con suono\n")
-        self.scrivi("   • 'blocca schermo tra 10 minuti'\n")
-        self.scrivi("   • 'di a [nome] che [messaggio]'\n\n")
+        self.scrivi("\n💡 Comandi visione:\n")
+        self.scrivi("   • 'cosa vedi?' → descrive tutto\n")
+        self.scrivi("   • 'cerca quello che vedi' → vede e cerca\n")
+        self.scrivi("   • 'che cartone è quello sullo schermo e cerca'\n")
+        self.scrivi("   • 'leggi schermo e cerca'\n\n")
 
         threading.Thread(target=lambda: parla("Shaula è pronta, Padrone~!"), daemon=True).start()
         self.wake = None
