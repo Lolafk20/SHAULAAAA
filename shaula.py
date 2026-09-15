@@ -1,5 +1,5 @@
 # ============================================================
-# S.H.A.U.L.A. v5.5.2 - Visione schermo avanzata
+# S.H.A.U.L.A. v5.5.3 - Visione avanzata + domande personalizzate
 # ============================================================
 import os, sys, json, time, shutil, datetime, subprocess
 import threading, webbrowser, ctypes, random, re, glob
@@ -155,7 +155,8 @@ VERBI_COMANDO = [
     "screenshot", "converti", "traduci", "riassumi", "ricorda", "dimentica",
     "modalità", "modalita", "processi", "pulisci", "email", "mail", "agenda",
     "evento", "nota", "lista", "whatsapp", "dì", "di", "dici", "manda", "invia",
-    "messaggio", "diario", "vedi", "guarda"
+    "messaggio", "diario", "vedi", "guarda", "chiedi", "domanda", "rispondi",
+    "dimmi", "analizza"
 ]
 
 def sembra_comando(testo):
@@ -395,7 +396,6 @@ def rispondi_con_ricerca(query, output):
 # VISIONE SCHERMO AVANZATA
 # ============================================================
 def _screenshot_corrente():
-    """Cattura lo schermo e restituisce il path temporaneo."""
     if not PIL_ImageGrab:
         return None
     try:
@@ -407,7 +407,6 @@ def _screenshot_corrente():
         return None
 
 def _chiedi_a_gemini_vision(domanda, output):
-    """Chiede a Gemini Vision qualcosa sullo schermo. Restituisce la risposta testuale."""
     if not PIL_ImageGrab:
         parla("Pillow non installato, Padrone~", output); return None
     if not genai or not CONFIG.get("gemini_api_key"):
@@ -429,7 +428,6 @@ def _chiedi_a_gemini_vision(domanda, output):
         return None
 
 def cosa_vedi(output):
-    """Descrive TUTTO quello che vede (immagini + testo)."""
     parla("Shaula guarda lo schermo, Padrone~...", output)
     domanda = (
         "Guarda questo screenshot del desktop. Descrivi in 4-5 frasi TUTTO quello "
@@ -442,12 +440,10 @@ def cosa_vedi(output):
         parla(risposta, output)
 
 def leggi_e_cerca(output):
-    """Vede lo schermo, lo riassume e cerca il contenuto principale in rete."""
     parla("Shaula guarda lo schermo e cerca, Padrone~...", output)
     domanda = (
         "Guarda questo screenshot. Riassumi in UNA FRASE CORTA (max 100 caratteri) "
-        "il contenuto principale che vedi (es. 'un articolo su X', 'una pagina di Wikipedia su Y', "
-        "'una foto di Z', 'una chat con W'). "
+        "il contenuto principale che vedi. "
         "Restituisci SOLO la frase, senza commenti né virgolette."
     )
     riassunto = _chiedi_a_gemini_vision(domanda, output)
@@ -460,7 +456,6 @@ def leggi_e_cerca(output):
     return True
 
 def cerca_quello_che_vedi(output):
-    """Trova TUTTO quello che vede sullo schermo e cerca l'argomento principale."""
     parla("Shaula guarda TUTTO quello che c'è sullo schermo, Padrone~...", output)
     domanda = (
         "Guarda questo screenshot. Elenca TUTTI gli elementi visibili: "
@@ -478,7 +473,6 @@ def cerca_quello_che_vedi(output):
     return True
 
 def chiedi_e_cerca(domanda, output):
-    """Fai una domanda personalizzata sullo schermo + cerca in rete."""
     parla(f"Shaula guarda lo schermo per rispondere a: '{domanda}'", output)
     prompt_vision = (
         f"Guarda questo screenshot del desktop. Rispondi a questa domanda "
@@ -506,6 +500,16 @@ def chiedi_e_cerca(domanda, output):
     except Exception as e:
         parla(f"Errore generazione query: {str(e)[:120]}", output)
     return True
+
+def chiedi_solo_schermo(domanda, output):
+    prompt = (
+        f"Guarda questo screenshot del desktop. Rispondi a: '{domanda}'. "
+        f"In 2-4 frasi, con la personalità di Shaula. Descrivi anche eventuali immagini. "
+        f"Sii precisa e utile."
+    )
+    risposta = _chiedi_a_gemini_vision(prompt, output)
+    if risposta:
+        parla(risposta, output)
 
 # ============================================================
 # DIARIO
@@ -969,7 +973,9 @@ def esegui(comando, output):
 
     estrai_info_automatiche(cl, output)
 
-    # ---- BLOCCO PROGRAMMATO ----
+    # ============================================================
+    # BLOCCO PROGRAMMATO
+    # ============================================================
     m = re.search(r"blocca\s+(?:lo\s+schermo|il\s+pc|pc|schermo)\s+tra\s+(.+)", c)
     if m:
         result = _parse_tempo(m.group(1))
@@ -981,48 +987,92 @@ def esegui(comando, output):
             parla("Per quanto tempo? 'blocca schermo tra 5 minuti'", output)
             return True
 
-    # ---- LETTURA SCHERMO AVANZATA ----
-    # 1. "cerca quello che vedi" / "cerca tutto quello che vedi"
-    if any(p in c for p in ["cerca quello che vedi", "cerca quello che c'è sullo schermo",
-                              "cerca quello sullo schermo", "cerca tutto quello che vedi",
-                              "cerca tutto quello sullo schermo"]):
-        threading.Thread(target=cerca_quello_che_vedi, args=(output,), daemon=True).start()
-        return True
-
-    # 2. "leggi schermo e cerca" / "vedi e cerca"
-    if any(p in c for p in ["leggi schermo e cerca", "leggi lo schermo e cerca",
-                              "leggi e cerca", "vedi e cerca", "guarda e cerca"]):
-        threading.Thread(target=leggi_e_cerca, args=(output,), daemon=True).start()
-        return True
-
-    # 3. Domanda personalizzata + cerca: "[domanda] sullo schermo e cerca"
-    m = re.search(r"^(.+?)\s+(?:sullo schermo|sulla schermata|che vedo)\s+e\s+cerca$", c)
+    # ============================================================
+    # LETTURA SCHERMO AVANZATA - DOMANDE PERSONALIZZATE
+    # ============================================================
+    
+    # ═══ COMANDO ESPLICITO: "chiedi allo schermo: [domanda]" ═══
+    m = re.search(r"^(?:chiedi allo schermo|chiedi allo schermo:|guarda lo schermo e dimmi|"
+                  r"domanda allo schermo|domanda allo schermo:|chiedi al monitor|"
+                  r"chiedi allo schermo che|chiedi al monitor che)"
+                  r"[:\s]\s*(.+)$", cl, re.IGNORECASE)
     if m:
         domanda = m.group(1).strip()
         threading.Thread(target=chiedi_e_cerca, args=(domanda, output), daemon=True).start()
         return True
 
-    # 4. Domanda personalizzata semplice: "[domanda] sullo schermo"
-    m = re.search(r"^(.+?)\s+(?:sullo schermo|sulla schermata|che vedo)$", c)
-    if m and len(m.group(1).strip()) >= 3:
+    # ═══ COMANDO ESPLICITO SENZA CERCA: "guarda e rispondi: [domanda]" ═══
+    m = re.search(r"^(?:guarda e rispondi|guarda e dimmi|rispondi a|dimmi)"
+                  r"[:\s]\s*(.+?)(?:\s+(?:sullo schermo|sulla schermata|che vedo))?$", 
+                  cl, re.IGNORECASE)
+    if m and any(w in c for w in ["schermo", "schermata", "vedo", "monitor"]):
         domanda = m.group(1).strip()
-        def _chiedi_solo():
-            prompt = (
-                f"Guarda questo screenshot del desktop. Rispondi a: '{domanda}'. "
-                f"In 2-3 frasi, con la personalità di Shaula. Descrivi anche eventuali immagini."
-            )
-            risposta = _chiedi_a_gemini_vision(prompt, output)
-            if risposta:
-                parla(risposta, output)
-        threading.Thread(target=_chiedi_solo, daemon=True).start()
+        if len(domanda) >= 3:
+            threading.Thread(target=chiedi_solo_schermo, args=(domanda, output), daemon=True).start()
+            return True
+
+    # ═══ COMANDO ESPLICITO CON CERCA: "guarda e cerca: [argomento]" ═══
+    m = re.search(r"^(?:guarda e cerca|vedi e cerca|analizza e cerca)[:\s]\s*(.+)$", 
+                  cl, re.IGNORECASE)
+    if m:
+        argomento = m.group(1).strip()
+        threading.Thread(target=chiedi_e_cerca, args=(argomento, output), daemon=True).start()
         return True
 
-    # 5. Descrivi schermo (default)
-    if "cosa vedi" in c or "cosa c'è sullo schermo" in c or ("leggi" in c and "schermo" in c):
+    # ═══ DOMANDA + "sullo schermo" + "cerca" ═══
+    m = re.search(r"^(.+?)\s+(?:sullo schermo|sulla schermata|sul monitor|che vedo|che c'è sullo schermo)"
+                  r"(?:\s+(?:e\s+cerca|e\s+cercalo|e\s+cercala|cercalo|cercala|e\s+cerca in rete|"
+                  r"e\s+cerca online|e\s+cerca su google))$", cl, re.IGNORECASE)
+    if m:
+        domanda = m.group(1).strip()
+        threading.Thread(target=chiedi_e_cerca, args=(domanda, output), daemon=True).start()
+        return True
+
+    # ═══ DOMANDA + "sullo schermo" (senza cerca) ═══
+    m = re.search(r"^(.+?)\s+(?:sullo schermo|sulla schermata|sul monitor|che vedo|che c'è sullo schermo)$", 
+                  cl, re.IGNORECASE)
+    if m and len(m.group(1).strip()) >= 3:
+        domanda = m.group(1).strip()
+        threading.Thread(target=chiedi_solo_schermo, args=(domanda, output), daemon=True).start()
+        return True
+
+    # ═══ DOMANDE DIRETTE CON PAROLE CHIAVE ═══
+    if any(p in c for p in ["cosa c'è scritto", "cosa dice", "cosa mostra", 
+                              "che errore", "che messaggio", "che persona", 
+                              "che cartone", "che film", "che serie", "che gioco",
+                              "che prodotto", "che logo", "che animale", "che oggetto",
+                              "quanti like", "quanti commenti", "quante visualizzazioni",
+                              "che colore", "che testo", "leggi il", "leggi la",
+                              "che c'è nella foto", "che c'è nell'immagine",
+                              "che c'è nello schermo", "che c'è nel video"]):
+        domanda = cl
+        threading.Thread(target=chiedi_solo_schermo, args=(domanda, output), daemon=True).start()
+        return True
+
+    # ═══ COMANDI FISSI ═══
+    
+    # "cerca quello che vedi"
+    if any(p in c for p in ["cerca quello che vedi", "cerca quello che c'è sullo schermo",
+                              "cerca quello sullo schermo", "cerca tutto quello che vedi",
+                              "cerca tutto quello sullo schermo", "cerca quello che vedo"]):
+        threading.Thread(target=cerca_quello_che_vedi, args=(output,), daemon=True).start()
+        return True
+
+    # "leggi schermo e cerca"
+    if any(p in c for p in ["leggi schermo e cerca", "leggi lo schermo e cerca",
+                              "leggi e cerca", "vedi e cerca", "guarda e cerca",
+                              "leggi schermo", "leggi lo schermo"]):
+        threading.Thread(target=leggi_e_cerca, args=(output,), daemon=True).start()
+        return True
+
+    # "cosa vedi" / "descrivi schermo"
+    if "cosa vedi" in c or "cosa c'è sullo schermo" in c or "descrivi schermo" in c:
         threading.Thread(target=cosa_vedi, args=(output,), daemon=True).start()
         return True
 
-    # ---- DIARIO ----
+    # ============================================================
+    # DIARIO
+    # ============================================================
     if "scrivi" in c and "diario" in c:
         parla("Shaula scrive, Padrone~... 📔", output)
         def _s():
@@ -1048,7 +1098,9 @@ def esegui(comando, output):
     if "quante pagine" in c and "diario" in c:
         parla(f"{len(DIARIO['pagine'])} pagine!", output); return True
 
-    # ---- MODALITÀ ----
+    # ============================================================
+    # MODALITÀ
+    # ============================================================
     if "modalità" in c or "modalita" in c:
         for mod in ["normale", "tsundere", "yandere", "seria"]:
             if mod in c:
@@ -1057,7 +1109,9 @@ def esegui(comando, output):
                 parla(f"Modalità {mod}!", output); return True
         parla("Modalità: normale, tsundere, yandere, seria", output); return True
 
-    # ---- MEMORIA ----
+    # ============================================================
+    # MEMORIA
+    # ============================================================
     if c.startswith("ricorda che"):
         MEMORIA["ricordi"].append(cl[11:].strip())
         salva_json(MEMORIA_FILE, MEMORIA)
@@ -1068,7 +1122,9 @@ def esegui(comando, output):
         if MEMORIA["ricordi"]: msg += "Ricordi: " + "; ".join(MEMORIA["ricordi"][-5:])
         parla(msg or "Non ricordo nulla", output); return True
 
-    # ---- WHATSAPP ----
+    # ============================================================
+    # WHATSAPP
+    # ============================================================
     verbi_wa = r"(?:dì|di|dici|manda|invia|scrivi|messaggio)"
     m1 = re.search(rf"^{verbi_wa}\s+(?:un\s+)?(?:messaggio\s+)?(?:whatsapp\s+)?(?:a|ad|al|alla)\s+(?:il\s+contatto\s+|contatto\s+|il\s+|la\s+)?(.+?)\s*(?:che|:)\s*(.+)$", cl, re.IGNORECASE)
     m2 = None
@@ -1087,7 +1143,9 @@ def esegui(comando, output):
         except: webbrowser.open("https://web.whatsapp.com"); parla("Apro WhatsApp Web!", output)
         return True
 
-    # ---- PC ----
+    # ============================================================
+    # PC
+    # ============================================================
     if "processi" in c or "cosa consuma" in c:
         ordine = "cpu" if "cpu" in c else "ram"
         parla(f"Processi per {ordine.upper()}:", output)
@@ -1124,7 +1182,9 @@ def esegui(comando, output):
         sec = val if "sec" in unit else val * 60 if "min" in unit else val * 3600
         os.system(f"shutdown /s /t {sec}"); parla(f"Spegno tra {val} {unit}", output); return True
 
-    # ---- RICERCA SU SITI ----
+    # ============================================================
+    # RICERCA SU SITI
+    # ============================================================
     if "cerca su google" in c or "cerca su internet" in c or "cerca online" in c:
         q = re.sub(r"cerca (su google|su internet|online)", "", c).strip()
         if q:
@@ -1156,7 +1216,9 @@ def esegui(comando, output):
         webbrowser.open(SITI_WEB[m_sito.group(1)])
         parla(f"Apro {m_sito.group(1)}!", output); return True
 
-    # ---- RICERCA GENERICA ----
+    # ============================================================
+    # RICERCA GENERICA
+    # ============================================================
     if c.startswith("cerca ") or c.startswith("cercami ") or c.startswith("cerca informazioni su "):
         q = re.sub(r"^(cerca|cercami|cerca informazioni su)\s+", "", cl, flags=re.IGNORECASE).strip()
         q = re.sub(r"^(su|in|nel|nella)\s+", "", q, flags=re.IGNORECASE).strip()
@@ -1183,7 +1245,9 @@ def esegui(comando, output):
             webbrowser.open(url); parla(f"Apro {url}!", output)
         return True
 
-    # ---- MUSICA ----
+    # ============================================================
+    # MUSICA
+    # ============================================================
     parole_musica = ["metti musica", "play musica", "voglio musica", "metti su musica"]
     if any(p in c for p in parole_musica) or c == "musica":
         webbrowser.open("https://music.youtube.com/"); parla("Metto la musica!", output); return True
@@ -1196,7 +1260,9 @@ def esegui(comando, output):
     if "canzone successiva" in c or c == "skip": media_key('next track'); parla("Cambio!", output); return True
     if "canzone precedente" in c: media_key('previous track'); parla("Torno indietro!", output); return True
 
-    # ---- VOLUME ----
+    # ============================================================
+    # VOLUME
+    # ============================================================
     if any(p in c for p in ["alza volume", "alza il volume", "volume su", "aumenta volume"]):
         cambia_volume(0.10); parla("Volume alzato!", output); return True
     if any(p in c for p in ["abbassa volume", "abbassa il volume", "volume giù", "diminuisci volume"]):
@@ -1204,7 +1270,9 @@ def esegui(comando, output):
     if any(p in c for p in ["muto", "silenzio", "muta audio"]):
         toggle_mute(); parla("Silenziato!", output); return True
 
-    # ---- TIMER ----
+    # ============================================================
+    # TIMER
+    # ============================================================
     if "timer" in c:
         result = _parse_tempo(c)
         if result:
@@ -1216,7 +1284,9 @@ def esegui(comando, output):
             parla("Per quanto tempo? Dì: 'timer 5 minuti'", output)
             return True
 
-    # ---- SVEGLIA ----
+    # ============================================================
+    # SVEGLIA
+    # ============================================================
     m = re.search(r"svegliami alle (\d{1,2})[:.]?(\d{2})?", c)
     if m:
         ora = int(m.group(1)); minuto = int(m.group(2)) if m.group(2) else 0
@@ -1228,7 +1298,9 @@ def esegui(comando, output):
         parla(f"Ti sveglierò alle {ora}:{minuto:02d} con un suono!", output); return True
     if "svegliami" in c: parla("A che ora? 'svegliami alle 7:30'", output); return True
 
-    # ---- SCHERMO ----
+    # ============================================================
+    # SCHERMO
+    # ============================================================
     if "screenshot" in c and "http" not in c:
         if PIL_ImageGrab:
             n = f"screenshot_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
@@ -1251,7 +1323,9 @@ def esegui(comando, output):
         except: pass
         return True
 
-    # ---- UTILITY ----
+    # ============================================================
+    # UTILITY
+    # ============================================================
     m = re.search(r"quanto fa ([\d\s+\-*/().,%]+)", c)
     if m:
         try:
@@ -1265,7 +1339,9 @@ def esegui(comando, output):
         if natale < oggi: natale = datetime.date(oggi.year + 1, 12, 25)
         parla(f"Mancano {(natale - oggi).days} giorni a Natale!", output); return True
 
-    # ---- CARTELLE ----
+    # ============================================================
+    # CARTELLE
+    # ============================================================
     if "crea cartella" in c:
         n = cl.lower().replace("crea cartella", "").strip()
         if n:
@@ -1292,7 +1368,9 @@ def esegui(comando, output):
             parla(f"Trovati {len(trovati)}! Primo: {trovati[0]}" if trovati else "Nessun file", output)
         return True
 
-    # ---- APRI PROGRAMMI ----
+    # ============================================================
+    # APRI PROGRAMMI
+    # ============================================================
     if c.startswith("apri "):
         prog = cl[5:].strip(); prog_low = prog.lower()
         if prog_low in SITI_WEB:
@@ -1311,7 +1389,9 @@ def esegui(comando, output):
         except: parla(f"Non riesco ad aprire '{prog}'", output)
         return True
 
-    # ---- SISTEMA ----
+    # ============================================================
+    # SISTEMA
+    # ============================================================
     if "info sistema" in c:
         if psutil:
             cpu = psutil.cpu_percent(interval=0.5)
@@ -1332,7 +1412,9 @@ def esegui(comando, output):
     if "annulla spegnimento" in c:
         os.system("shutdown /a"); parla("Annullato!", output); return True
 
-    # ---- APPUNTI ----
+    # ============================================================
+    # APPUNTI
+    # ============================================================
     if c.startswith("scrivi appunto"):
         t = cl.replace("scrivi appunto", "").strip()
         if t:
@@ -1347,7 +1429,9 @@ def esegui(comando, output):
         else: parla("Nessun appunto", output)
         return True
 
-    # ---- AGENDA ----
+    # ============================================================
+    # AGENDA
+    # ============================================================
     if "aggiungi evento" in c:
         m = re.search(r"evento\s+(.+?)\s+(?:il|per il|domani|oggi)\s*(.*)", cl, re.IGNORECASE)
         if m:
@@ -1373,7 +1457,9 @@ def esegui(comando, output):
         parla(f"Lista {cat}:\n" + "\n".join(f"- {e['testo']}" for e in el[-10:]) if el else f"Lista {cat} vuota", output)
         return True
 
-    # ---- EMAIL ----
+    # ============================================================
+    # EMAIL
+    # ============================================================
     if "email" in c or "mail" in c:
         if "invia" in c or "manda" in c:
             m = re.search(r"([\w.+-]+@[\w.-]+)\s+(?:oggetto\s+)?(.+?)(?:\s+corpo\s+(.+))?$", cl)
@@ -1383,7 +1469,9 @@ def esegui(comando, output):
             return True
         webbrowser.open("https://mail.google.com"); parla("Apro Gmail!", output); return True
 
-    # ---- TRADUZIONE ----
+    # ============================================================
+    # TRADUZIONE
+    # ============================================================
     if c.startswith("traduci"):
         m = re.search(r"traduci (?:in (\w+)\s+)?(.+)", cl, re.IGNORECASE)
         if m:
@@ -1391,13 +1479,17 @@ def esegui(comando, output):
             parla(f"Traduco in {m.group(1) or 'inglese'}!", output)
         return True
 
-    # ---- PERSONALITÀ ----
+    # ============================================================
+    # PERSONALITÀ
+    # ============================================================
     if "chi sei" in c: parla("Shaula è la tua assistente devota, Padrone~! 🦂", output); return True
     if "ti amo" in c or "ti voglio bene" in c: parla("Shaula ti adora, Padrone~! 💕", output); return True
     if "buonanotte" in c: parla("Buonanotte, Padrone~! 🌙💕", output); return True
     if "buongiorno" in c: parla("Buongiorno, Padrone~! ☀️🦂", output); return True
 
-    # ---- PLUGIN ----
+    # ============================================================
+    # PLUGIN
+    # ============================================================
     if os.path.exists(PLUGIN_FILE):
         try:
             import plugins; importlib.reload(plugins)
@@ -1430,11 +1522,11 @@ class WakeWord(threading.Thread):
 class GUI:
     def __init__(self, root):
         self.root = root
-        root.title("🦂 S.H.A.U.L.A. v5.5.2")
+        root.title("🦂 S.H.A.U.L.A. v5.5.3")
         root.geometry("950x720")
         root.configure(bg="#1a1a2e")
 
-        tk.Label(root, text="🦂  S.H.A.U.L.A. v5.5.2  🦂",
+        tk.Label(root, text="🦂  S.H.A.U.L.A. v5.5.3  🦂",
                  font=("Segoe UI", 22, "bold"), bg="#1a1a2e", fg="#ff6b9d").pack(pady=(12, 0))
         tk.Label(root, text="La tua assistente devota, Padrone~!",
                  font=("Segoe UI", 10, "italic"), bg="#1a1a2e", fg="#a0a0c0").pack()
@@ -1486,11 +1578,12 @@ class GUI:
             ultima = DIARIO["pagine"][-1]
             self.scrivi(f"📔 Diario: {n_pagine} pagine | Ultima: {ultima['data']}\n")
 
-        self.scrivi("\n💡 Comandi visione:\n")
-        self.scrivi("   • 'cosa vedi?' → descrive tutto\n")
-        self.scrivi("   • 'cerca quello che vedi' → vede e cerca\n")
+        self.scrivi("\n💡 Domande personalizzate sullo schermo:\n")
+        self.scrivi("   • 'chiedi allo schermo: che errore c'è?'\n")
         self.scrivi("   • 'che cartone è quello sullo schermo e cerca'\n")
-        self.scrivi("   • 'leggi schermo e cerca'\n\n")
+        self.scrivi("   • 'che persona è quella sullo schermo'\n")
+        self.scrivi("   • 'cosa c'è scritto qui?'\n")
+        self.scrivi("   • 'cerca quello che vedi' / 'leggi schermo e cerca'\n\n")
 
         threading.Thread(target=lambda: parla("Shaula è pronta, Padrone~!"), daemon=True).start()
         self.wake = None
